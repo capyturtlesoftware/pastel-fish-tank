@@ -35,7 +35,37 @@ whole refresh periods and hide anything cheaper than one frame.
 
 ## Running it
 
-Open `index.html`. That's it — there's no server, no install, nothing to build.
+Open `index.html`. That's it — no server, no install, nothing to build.
+
+For a local server (needed only if you want the seeded-tank URLs to behave
+exactly as they do in production):
+
+```sh
+python3 -m http.server 8791 --directory .
+```
+
+## Development
+
+| File | What it's for |
+|---|---|
+| `index.html` | The entire app |
+| `DESIGN.md` | Architecture and design decisions |
+| `PERFORMANCE.md` | Measurement methodology and findings — **read before optimising** |
+| `CLAUDE.md` | Working constraints and gotchas |
+
+Syntax-check the embedded script without a build step:
+
+```sh
+node --check <(sed -n '/^<script>/,/^<\/script>/p' index.html | sed '1d;$d')
+```
+
+## Deploying
+
+Pushing to `main` publishes automatically via GitHub Pages (~30 s):
+
+```sh
+git add -A && git commit -m "..." && git push
+```
 
 ## Licence
 
