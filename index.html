@@ -1,0 +1,2082 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<meta name="theme-color" content="#a9dbec" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="apple-mobile-web-app-title" content="Fish Tank" />
+<meta name="description" content="A pastel aquarium that swims in your browser." />
+<title>Pastel Fish Tank</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0; height: 100%; overflow: hidden;
+    font-family: ui-rounded, "SF Pro Rounded", "Nunito", "Avenir Next", system-ui, sans-serif;
+    background: #cdeef2;
+  }
+  canvas#tank { display: block; width: 100vw; height: 100vh; touch-action: none; }
+
+  /* Glassmorphism over an animating canvas is a compositor trap: the blur
+     region can never be cached, so it is re-blurred every single frame. Only
+     the top quality level pays for it; below that we use flat translucency,
+     which is visually close and effectively free. */
+  body.lite #panel,
+  body.lite #toggleBtn,
+  body.lite #modalWrap { backdrop-filter: none !important; -webkit-backdrop-filter: none !important; }
+  body.lite #panel { background: rgba(247,252,254,0.92); }
+  body.lite #panel.dark { background: rgba(26,36,60,0.94); }
+  body.lite #toggleBtn { background: rgba(247,252,254,0.9); }
+  body.lite #modalWrap { background: rgba(20,35,60,.45); }
+
+  /* Promote the overlay UI to its own compositor layer. Without this the panel
+     shares a layer with the constantly-repainting canvas underneath it, so the
+     browser re-rasterises all of its text, blur and borders every single frame. */
+  #panel, #toggleBtn, #diagBox {
+    will-change: transform; transform: translateZ(0);
+    contain: layout paint style;
+  }
+
+  /* ---------- panel ---------- */
+  #panel {
+    position: fixed; top: 18px; right: 18px; width: 268px;
+    max-height: calc(100vh - 36px); overflow-y: auto; overscroll-behavior: contain;
+    padding: 16px 18px 18px;
+    border-radius: 20px;
+    background: rgba(255,255,255,0.42);
+    border: 1px solid rgba(255,255,255,0.65);
+    box-shadow: 0 10px 30px rgba(60,80,110,0.16);
+    backdrop-filter: blur(14px) saturate(1.3);
+    -webkit-backdrop-filter: blur(14px) saturate(1.3);
+    color: #3d4a63;
+    user-select: none;
+    transition: transform .35s cubic-bezier(.3,1.2,.4,1);
+    z-index: 10;
+    scrollbar-width: thin;
+  }
+  #panel::-webkit-scrollbar { width: 6px; }
+  #panel::-webkit-scrollbar-thumb { background: rgba(0,0,0,.15); border-radius: 99px; }
+  #panel.dark {
+    background: rgba(30,40,66,0.5);
+    border-color: rgba(255,255,255,0.16);
+    color: #e6ecff;
+    box-shadow: 0 10px 30px rgba(0,0,0,0.32);
+  }
+  #panel.collapsed { transform: translateX(calc(100% + 28px)); }
+
+  #panel h1 {
+    margin: 0 0 14px; font-size: 15px; font-weight: 700; letter-spacing: .3px;
+    display: flex; align-items: center; gap: 8px;
+  }
+  #panel h1 .dot { width: 9px; height: 9px; border-radius: 50%; background: #ffb3c8; box-shadow: 0 0 0 4px rgba(255,179,200,.28); }
+
+  .sect {
+    font-size: 10px; font-weight: 700; letter-spacing: 1.1px; text-transform: uppercase;
+    opacity: .5; margin: 16px 0 9px; padding-top: 13px;
+    border-top: 1px solid rgba(120,140,170,.18);
+  }
+  #panel.dark .sect { border-color: rgba(255,255,255,.12); }
+  .sect:first-of-type { border-top: none; padding-top: 0; margin-top: 0; }
+
+  .row { margin-bottom: 13px; }
+  .row:last-child { margin-bottom: 0; }
+  label.lab {
+    display: flex; justify-content: space-between; align-items: baseline;
+    font-size: 12px; font-weight: 600; letter-spacing: .3px;
+    opacity: .82; margin-bottom: 7px;
+  }
+  label.lab .val { font-variant-numeric: tabular-nums; opacity: .95; }
+
+  input[type=range] {
+    -webkit-appearance: none; appearance: none; width: 100%; height: 6px; border-radius: 99px;
+    background: rgba(255,255,255,0.6); outline: none; cursor: pointer;
+  }
+  #panel.dark input[type=range] { background: rgba(255,255,255,0.18); }
+  input[type=range]::-webkit-slider-thumb {
+    -webkit-appearance: none; width: 18px; height: 18px; border-radius: 50%;
+    background: #fff; border: 2px solid currentColor; cursor: grab;
+    box-shadow: 0 2px 6px rgba(0,0,0,.18); transition: transform .12s;
+  }
+  input[type=range]::-webkit-slider-thumb:active { transform: scale(1.15); }
+  input[type=range]::-moz-range-thumb {
+    width: 16px; height: 16px; border-radius: 50%; background: #fff;
+    border: 2px solid currentColor; box-shadow: 0 2px 6px rgba(0,0,0,.18);
+  }
+
+  .themes { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+  .swatch {
+    height: 38px; border-radius: 12px; cursor: pointer; position: relative;
+    border: 2px solid transparent; overflow: hidden;
+    transition: transform .15s, border-color .15s;
+  }
+  .swatch:hover { transform: translateY(-2px); }
+  .swatch.active { border-color: currentColor; }
+  .swatch .fishdot {
+    position: absolute; width: 8px; height: 8px; border-radius: 50%;
+    left: 50%; top: 50%; transform: translate(-50%,-50%);
+    box-shadow: -11px -5px 0 -1px currentColor, 11px 5px 0 -1px currentColor;
+  }
+
+  .toggles { display: flex; gap: 7px; flex-wrap: wrap; }
+  .chip {
+    flex: 1 1 30%; text-align: center; font-size: 11.5px; font-weight: 600;
+    padding: 7px 4px; border-radius: 10px; cursor: pointer; white-space: nowrap;
+    background: rgba(255,255,255,0.42); border: 1px solid rgba(255,255,255,0.5);
+    opacity: .48; transition: opacity .18s, background .18s;
+  }
+  #panel.dark .chip { background: rgba(255,255,255,0.1); border-color: rgba(255,255,255,0.14); }
+  .chip.on { opacity: 1; background: rgba(255,255,255,0.82); }
+  #panel.dark .chip.on { background: rgba(255,255,255,0.22); }
+
+  .btn {
+    display: block; width: 100%; text-align: center; font-size: 12px; font-weight: 700;
+    padding: 9px 6px; border-radius: 11px; cursor: pointer; border: none;
+    background: rgba(255,255,255,0.72); color: inherit;
+    font-family: inherit; letter-spacing: .3px; transition: transform .12s, background .18s;
+  }
+  .btn:hover { background: rgba(255,255,255,0.92); }
+  .btn:active { transform: scale(.97); }
+  #panel.dark .btn { background: rgba(255,255,255,0.16); }
+  #panel.dark .btn:hover { background: rgba(255,255,255,0.26); }
+  .btnrow { display: flex; gap: 7px; }
+
+  #diagBox {
+    position: fixed; left: 18px; top: 18px; z-index: 30; display: none;
+    max-width: min(460px, calc(100vw - 36px)); max-height: calc(100vh - 36px); overflow: auto;
+    padding: 16px 18px; border-radius: 16px;
+    background: rgba(18,26,44,.93); color: #e8eefc;
+    font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+    white-space: pre; box-shadow: 0 18px 50px rgba(0,0,0,.4);
+  }
+  #diagBox.open { display: block; }
+  #diagBox .dbtn {
+    display: inline-block; margin: 12px 8px 0 0; padding: 7px 14px; border-radius: 9px;
+    background: #3d5680; color: #fff; cursor: pointer; font-weight: 700;
+    font-family: ui-rounded, system-ui, sans-serif; font-size: 12px;
+  }
+  #diagBox .dbtn:hover { background: #4d6a9c; }
+
+  .hint { font-size: 11px; opacity: .55; text-align: center; margin-top: 13px; line-height: 1.6; }
+  /* tabular-nums + containment so the twice-a-second stats update can't
+     reflow or repaint the rest of the panel */
+  .hint .stats {
+    font-variant-numeric: tabular-nums; letter-spacing: .3px;
+    display: block; min-height: 1.4em; contain: content;
+  }
+
+  #toggleBtn {
+    position: fixed; top: 18px; right: 18px; z-index: 11;
+    width: 42px; height: 42px; border-radius: 50%; border: 1px solid rgba(255,255,255,0.6);
+    background: rgba(255,255,255,0.45); backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+    cursor: pointer; display: none; align-items: center; justify-content: center;
+    font-size: 19px; box-shadow: 0 6px 18px rgba(60,80,110,.16);
+  }
+  #panel.collapsed ~ #toggleBtn { display: flex; }
+  #closeBtn {
+    position: absolute; top: 12px; right: 13px; width: 22px; height: 22px;
+    border: none; background: transparent; color: inherit; opacity: .45;
+    cursor: pointer; font-size: 16px; line-height: 1; padding: 0;
+  }
+  #closeBtn:hover { opacity: .9; }
+
+  /* ---------- design-a-fish modal ---------- */
+  #modalWrap {
+    position: fixed; inset: 0; z-index: 20; display: none;
+    align-items: center; justify-content: center;
+    background: rgba(20,35,60,.32); backdrop-filter: blur(3px);
+    -webkit-backdrop-filter: blur(3px);
+  }
+  #modalWrap.open { display: flex; }
+  #modal {
+    width: min(370px, calc(100vw - 32px)); max-height: calc(100vh - 40px); overflow-y: auto;
+    padding: 22px; border-radius: 22px; color: #3d4a63;
+    background: rgba(255,255,255,.9);
+    border: 1px solid rgba(255,255,255,.8);
+    box-shadow: 0 24px 60px rgba(30,50,80,.3);
+    font-size: 13px;
+  }
+  #modal h2 { margin: 0 0 4px; font-size: 17px; font-weight: 700; }
+  #modal .sub { margin: 0 0 16px; font-size: 12px; opacity: .6; }
+  #modal .sect { border-color: rgba(120,140,170,.2); }
+  #modal input[type=text] {
+    width: 100%; padding: 9px 12px; border-radius: 11px; font-family: inherit; font-size: 13px;
+    border: 1px solid rgba(120,140,170,.3); background: rgba(255,255,255,.8); color: inherit;
+    outline: none;
+  }
+  #modal input[type=text]:focus { border-color: #7fb8d8; }
+  .picker { display: flex; gap: 7px; flex-wrap: wrap; }
+  .pick {
+    flex: 1 1 auto; padding: 7px 10px; border-radius: 10px; cursor: pointer; text-align: center;
+    font-size: 11.5px; font-weight: 600; border: 1.5px solid transparent;
+    background: rgba(140,165,195,.14); transition: background .15s, border-color .15s;
+  }
+  .pick.on { background: rgba(140,190,225,.34); border-color: #74b3d6; }
+  #panel.dark .pick { background: rgba(255,255,255,.1); }
+  #panel.dark .pick.on { background: rgba(255,255,255,.24); border-color: #9fc4e0; }
+  .cols { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .col {
+    width: 27px; height: 27px; border-radius: 50%; cursor: pointer;
+    border: 2.5px solid transparent; transition: transform .13s;
+  }
+  .col:hover { transform: scale(1.13); }
+  .col.on { border-color: #46536e; }
+  #fishPreview { width: 100%; height: 96px; border-radius: 14px; display: block; margin-bottom: 4px; }
+
+  @media (max-width: 560px) {
+    #panel { top: auto; bottom: 14px; right: 14px; left: 14px; width: auto; max-height: 62vh; }
+    #panel.collapsed { transform: translateY(calc(100% + 24px)); }
+    #toggleBtn { top: auto; bottom: 16px; }
+  }
+</style>
+</head>
+<body>
+<canvas id="tank"></canvas>
+
+<div id="panel">
+  <button id="closeBtn" title="Hide panel">✕</button>
+  <h1><span class="dot"></span> Fish Tank</h1>
+
+  <div class="sect">Tank</div>
+  <div class="row">
+    <label class="lab" for="count">Fish <span class="val" id="countVal">30</span></label>
+    <input type="range" id="count" min="1" max="150" value="30" />
+  </div>
+  <div class="row">
+    <label class="lab" for="size">Size <span class="val" id="sizeVal">1.9×</span></label>
+    <input type="range" id="size" min="60" max="220" value="190" />
+  </div>
+  <div class="row">
+    <label class="lab" for="speed">Speed <span class="val" id="speedVal">1.0×</span></label>
+    <input type="range" id="speed" min="10" max="300" value="100" />
+  </div>
+
+  <div class="sect">Theme</div>
+  <div class="row"><div class="themes" id="themes"></div></div>
+  <div class="row"><div class="toggles">
+    <div class="chip" data-opt="autoTheme" style="flex:1 1 100%">🌗 Follow time of day</div>
+  </div></div>
+
+  <div class="sect">Life</div>
+  <div class="row"><div class="toggles">
+    <div class="chip on" data-opt="school">Schooling</div>
+    <div class="chip on" data-opt="cursor">Cursor</div>
+    <div class="chip" data-opt="predator">Predator</div>
+  </div></div>
+
+  <div class="sect">Quality</div>
+  <div class="row"><div class="picker" id="quality"></div></div>
+  <div class="row"><div class="toggles">
+    <div class="chip" data-opt="fpsCap" style="flex:1 1 100%">🎚 Half refresh rate (saves power)</div>
+  </div></div>
+
+  <div class="sect">Look</div>
+  <div class="row"><div class="toggles">
+    <div class="chip on" data-opt="bubbles">Bubbles</div>
+    <div class="chip on" data-opt="plants">Plants</div>
+    <div class="chip on" data-opt="rays">Light</div>
+    <div class="chip on" data-opt="caustics">Caustics</div>
+    <div class="chip on" data-opt="dof">Depth</div>
+    <div class="chip on" data-opt="shadows">Shadows</div>
+  </div></div>
+
+  <div class="sect">Your tank</div>
+  <div class="row"><button class="btn" id="designBtn">✨ Design a fish</button></div>
+  <div class="row btnrow">
+    <button class="btn" id="shareBtn">🔗 Share</button>
+    <button class="btn" id="newBtn">🎲 New tank</button>
+  </div>
+  <div class="row"><button class="btn" id="diagBtn">🩺 Diagnose lag</button></div>
+
+  <div class="hint">
+    Click the water to sprinkle food 🍤<br />
+    <span class="stats" id="stats">—</span>
+  </div>
+</div>
+<button id="toggleBtn" title="Show panel">🐠</button>
+
+<div id="diagBox"></div>
+
+<div id="modalWrap">
+  <div id="modal">
+    <h2>Design a fish</h2>
+    <p class="sub">It joins the tank for good, and stays when you change the fish count.</p>
+
+    <canvas id="fishPreview"></canvas>
+
+    <div class="sect">Name</div>
+    <input type="text" id="fName" maxlength="18" placeholder="Bubbles" />
+
+    <div class="sect">Shape</div>
+    <div class="picker" id="fSpecies"></div>
+
+    <div class="sect">Body</div>
+    <div class="cols" id="fBody"></div>
+
+    <div class="sect">Fins</div>
+    <div class="cols" id="fFin"></div>
+
+    <div class="sect">Markings</div>
+    <div class="picker" id="fPattern"></div>
+
+    <div class="sect">Size</div>
+    <input type="range" id="fSize" min="60" max="260" value="140" />
+
+    <div class="sect"></div>
+    <div class="btnrow">
+      <button class="btn" id="fCancel">Cancel</button>
+      <button class="btn" id="fAdd" style="background:#8fd3f0">Add to tank</button>
+    </div>
+  </div>
+</div>
+
+<script>
+(() => {
+  'use strict';
+
+  const TAU = Math.PI * 2;
+  const clamp = (v, a, b) => v < a ? a : v > b ? b : v;
+  const rand = (a, b) => a + Math.random() * (b - a);   // runtime jitter (not seeded)
+  const pick = arr => arr[(Math.random() * arr.length) | 0];
+
+  const REDUCED = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  /* ------------------------------------------------------------------ *
+   *  Seeded PRNG — world generation only, so a seed reproduces a tank   *
+   * ------------------------------------------------------------------ */
+  function makeRng(seed) {
+    let a = seed >>> 0;
+    return () => {
+      a = (a + 0x6D2B79F5) | 0;
+      let t = Math.imul(a ^ (a >>> 15), 1 | a);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+  const rr = (rng, a, b) => a + rng() * (b - a);
+  const rpick = (rng, arr) => arr[(rng() * arr.length) | 0];
+
+  function readSeed() {
+    const m = /(?:^|[#&])s([0-9a-z]+)/i.exec(location.hash || '');
+    if (m) { const v = parseInt(m[1], 36); if (Number.isFinite(v) && v > 0) return v >>> 0; }
+    return (Math.random() * 0xffffffff) >>> 0;
+  }
+  let SEED = readSeed();
+  const writeSeed = () => { history.replaceState(null, '', '#s' + SEED.toString(36)); };
+
+  /* ------------------------------------------------------------------ *
+   *  Colour helpers                                                     *
+   * ------------------------------------------------------------------ */
+  function parseHex(hex) {
+    const h = hex.replace('#', '');
+    const n = parseInt(h.length === 3 ? h.split('').map(c => c + c).join('') : h, 16);
+    return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+  }
+  function shade(hex, amt) {
+    const [r, g, b] = parseHex(hex);
+    const f = v => clamp(Math.round(v + amt), 0, 255);
+    return `rgb(${f(r)},${f(g)},${f(b)})`;
+  }
+  function rgba(hex, a) {
+    const [r, g, b] = parseHex(hex);
+    return `rgba(${r},${g},${b},${a})`;
+  }
+
+  /* ------------------------------------------------------------------ *
+   *  Themes                                                             *
+   * ------------------------------------------------------------------ */
+  const THEMES = [
+    { id: 'lagoon', name: 'Pastel Lagoon', dark: false,
+      water: ['#dcf4f8', '#a9dbec', '#6fb3d2'],
+      fish: ['#ffb7c9', '#ffd6a5', '#a9def9', '#bdeeb2', '#e4c1f9', '#fdffb6'],
+      predator: '#546d8e', plant: ['#8ed4b0', '#6fc3a0'], sand: '#f2e3c9',
+      bubble: '#ffffff', ray: 'rgba(255,255,255,0.30)' },
+
+    { id: 'cotton', name: 'Cotton Candy', dark: false,
+      water: ['#ffe9f4', '#ffd0e4', '#cdb4ec'],
+      fish: ['#ff9ec4', '#c4a3f5', '#9ad6ff', '#fff0a3', '#ffbfa3', '#ffffff'],
+      predator: '#755c92', plant: ['#c9a7ef', '#b18ce0'], sand: '#fdeee2',
+      bubble: '#ffffff', ray: 'rgba(255,255,255,0.34)' },
+
+    { id: 'mint', name: 'Mint Sherbet', dark: false,
+      water: ['#e8fbf1', '#bdeedb', '#7fcfb6'],
+      fish: ['#ffc8dd', '#bde0fe', '#ffe5b4', '#a0e8c0', '#d6c9ff', '#fff5cc'],
+      predator: '#487b6f', plant: ['#7dcfa8', '#5cb894'], sand: '#f4ecd8',
+      bubble: '#ffffff', ray: 'rgba(255,255,255,0.28)' },
+
+    { id: 'moonlit', name: 'Moonlit Deep', dark: true,
+      water: ['#33477a', '#1b2a4d', '#0a1128'],
+      fish: ['#ffb3d1', '#a9c9ff', '#b9f6ca', '#ffe6a7', '#d6b8ff', '#9ef0e8'],
+      predator: '#9aa6bd', plant: ['#3f7f74', '#2c5f5a'], sand: '#343650',
+      bubble: '#cfe4ff', ray: 'rgba(180,210,255,0.16)', glow: true },
+
+    { id: 'peach', name: 'Peach Sunset', dark: false,
+      water: ['#fff2e4', '#ffd3c0', '#ee9f9c'],
+      fish: ['#ff9f9f', '#ffd79a', '#fff3b0', '#b8e0d2', '#c4b5f0', '#ffffff'],
+      predator: '#96574f', plant: ['#e0a58c', '#c98a72'], sand: '#fbe4cd',
+      bubble: '#ffffff', ray: 'rgba(255,235,205,0.4)' },
+
+    { id: 'lilac', name: 'Lilac Reef', dark: false,
+      water: ['#f4eeff', '#d9cdf5', '#a894d8'],
+      fish: ['#ffc2e2', '#a5d8ff', '#ffe0ac', '#c0f0d8', '#f7b7d3', '#ffffff'],
+      predator: '#63548c', plant: ['#9d8ad1', '#7e6bb8'], sand: '#efe6dd',
+      bubble: '#ffffff', ray: 'rgba(255,255,255,0.3)' }
+  ];
+  // clock → theme, used when "follow time of day" is on
+  function themeForHour(h) {
+    if (h >= 5 && h < 8) return 'peach';
+    if (h >= 8 && h < 17) return 'lagoon';
+    if (h >= 17 && h < 20) return 'lilac';
+    return 'moonlit';
+  }
+
+  /* ------------------------------------------------------------------ *
+   *  Species. `social` drives how strongly they school.                 *
+   * ------------------------------------------------------------------ */
+  const SPECIES = [
+    { id: 'tetra',  label: 'Tetra',  w: 3.0, social: 1.00, len: 1.90, height: 0.62, flex: 0.13, eyeU: 0.13,
+      prof: [0.18, 0.62, 0.88, 1.00, 0.96, 0.80, 0.58, 0.34, 0.15],
+      tail: 'fan',  tailLen: 0.60, tailSpread: 0.50,
+      dorsal: [0.30, 0.64, 0.40], anal: [0.58, 0.84, 0.26] },
+
+    { id: 'angel',  label: 'Angel',  w: 1.6, social: 0.35, len: 1.45, height: 1.02, flex: 0.09, eyeU: 0.15,
+      prof: [0.24, 0.74, 0.96, 1.00, 0.88, 0.64, 0.40, 0.22, 0.11],
+      tail: 'fan',  tailLen: 0.58, tailSpread: 0.60,
+      dorsal: [0.16, 0.60, 0.86], anal: [0.44, 0.84, 0.70], filament: true },
+
+    { id: 'puffer', label: 'Puffer', w: 1.5, social: 0.12, len: 1.42, height: 0.94, flex: 0.06, eyeU: 0.12,
+      prof: [0.42, 0.86, 1.00, 1.00, 0.94, 0.80, 0.60, 0.38, 0.19],
+      tail: 'round', tailLen: 0.50, tailSpread: 0.46,
+      dorsal: [0.44, 0.68, 0.22], anal: [0.50, 0.74, 0.19] },
+
+    { id: 'dart',   label: 'Dart',   w: 2.2, social: 0.90, len: 2.50, height: 0.44, flex: 0.17, eyeU: 0.10,
+      prof: [0.10, 0.46, 0.70, 0.82, 0.84, 0.76, 0.60, 0.42, 0.18],
+      tail: 'fork', tailLen: 0.70, tailSpread: 0.58,
+      dorsal: [0.26, 0.50, 0.32], anal: [0.58, 0.78, 0.20] },
+
+    { id: 'betta',  label: 'Betta',  w: 1.4, social: 0.00, len: 1.58, height: 0.72, flex: 0.12, eyeU: 0.13,
+      prof: [0.24, 0.68, 0.92, 1.00, 0.93, 0.78, 0.58, 0.38, 0.18],
+      tail: 'veil', tailLen: 1.05, tailSpread: 0.78,
+      dorsal: [0.30, 0.72, 0.64], anal: [0.48, 0.86, 0.58], filament: true }
+  ];
+  const HUNTER = { id: 'hunter', label: 'Hunter', social: 0, len: 3.00, height: 0.54, flex: 0.14, eyeU: 0.09,
+      prof: [0.12, 0.50, 0.78, 0.92, 0.90, 0.78, 0.60, 0.40, 0.16],
+      tail: 'fork', tailLen: 0.88, tailSpread: 0.74,
+      dorsal: [0.24, 0.56, 0.44], anal: [0.60, 0.80, 0.22] };
+
+  const SPECIES_BY_ID = {};
+  SPECIES.concat([HUNTER]).forEach(s => { SPECIES_BY_ID[s.id] = s; });
+  const SPECIES_BAG = [];
+  SPECIES.forEach(s => { for (let i = 0; i < s.w * 10; i++) SPECIES_BAG.push(s); });
+
+  function profAt(prof, u) {
+    const n = prof.length - 1;
+    const x = clamp(u, 0, 1) * n;
+    const i = Math.min(n - 1, x | 0);
+    const fr = x - i;
+    return prof[i] + (prof[i + 1] - prof[i]) * (fr * fr * (3 - 2 * fr));
+  }
+  const bodyX  = (sp, u) => sp.len * 0.52 - sp.len * u;
+  const halfH  = (sp, u) => profAt(sp.prof, u) * sp.height * 0.5;
+  const spineY = (sp, u, phase, k) => sp.flex * u * u * Math.sin(phase - u * 2.6) * k;
+
+  /* ------------------------------------------------------------------ *
+   *  Settings                                                           *
+   * ------------------------------------------------------------------ */
+  const DEFAULTS = {
+    count: 30, speed: REDUCED ? 45 : 100, theme: 'lagoon', autoTheme: false,
+    bubbles: true, plants: true, rays: !REDUCED, caustics: !REDUCED, dof: true, shadows: true,
+    school: true, cursor: true, predator: false, custom: [], quality: 'auto', fpsCap: false,
+    size: 190
+  };
+  const S = Object.assign({}, DEFAULTS);
+  try { Object.assign(S, JSON.parse(localStorage.getItem('pastelTank') || '{}')); } catch (e) {}
+  S.count = clamp(S.count | 0, 1, 150);
+  S.size = clamp(+S.size || 100, 60, 220);
+  if (!Array.isArray(S.custom)) S.custom = [];
+  if (S.quality === '3') S.quality = '2';   // migrate: Ultra was removed
+  const save = () => { try { localStorage.setItem('pastelTank', JSON.stringify(S)); } catch (e) {} };
+
+  let theme = THEMES.find(t => t.id === S.theme) || THEMES[0];
+
+  /* ------------------------------------------------------------------ *
+   *  Canvas + layers                                                    *
+   * ------------------------------------------------------------------ */
+  const canvas = document.getElementById('tank');
+  const ctx = canvas.getContext('2d', { alpha: false });
+  let dc = ctx;                       // current draw target (main, or the far/blur layer)
+  let W = 0, H = 0, DPR = 1, floorY = 0, sandH = 0;
+
+  const bgCanvas = document.createElement('canvas'), bgCtx = bgCanvas.getContext('2d');
+  const sandCanvas = document.createElement('canvas'), sandCtx = sandCanvas.getContext('2d');
+  const farCanvas = document.createElement('canvas'), farCtx = farCanvas.getContext('2d');
+  const fxCanvas = document.createElement('canvas'), fxCtx = fxCanvas.getContext('2d');
+  const FAR_SCALE = 0.34;             // far fish layer; the upscale IS the defocus
+  const FX_SCALE = 0.5;               // light layer; light is low-frequency, cheap to fake
+  let rayGrad = null, causticPat = null, shadowSprite = null;
+
+  /* ---------------- quality levels & adaptive governor ----------------- *
+   * Every full-screen pass costs W*H*DPR^2 pixels, so on a big retina
+   * display these dominate. Level drops shed passes first, then pixels.   */
+  const PX_BUDGET = [1.3e6, 2.2e6, 3.2e6];
+  let qLevel = 1;      // Auto starts at Medium and probes upward
+  const FX = { rays: 1, caustics: 1, dof: 1, shadows: 1, lod: 0, blend: 1 };
+  function applyQuality() {
+    // Measured on real hardware: caustics/rays/depth cost ~0ms because they run
+    // in the low-res light layer. Only ctx.filter blur and the panel's backdrop
+    // blur are actually expensive, so those are the only top-tier gates.
+    FX.caustics = !!S.caustics && qLevel >= 1;
+    FX.rays     = !!S.rays     && qLevel >= 1;
+    FX.dof      = !!S.dof      && qLevel >= 1;
+    FX.shadows  = !!S.shadows  && qLevel >= 1;
+    FX.lod      = qLevel <= 0 ? 1 : 0;
+    FX.blend    = qLevel >= 2;        // blend modes cost real time at high DPR
+    updateLod();
+    // The panel's backdrop blur is a per-frame compositor cost, not a canvas one.
+    // Only an explicit High choice pays for it — on Auto we never enable it, so
+    // the governor's upgrade probes can't make the panel flicker between styles.
+    document.body.classList.toggle('lite', !(qLevel >= 2 && S.quality !== 'auto'));
+  }
+
+  // Gradients/patterns are not bound to a context, so one cache serves both layers.
+  const bodyGrads = new Map(), finGrads = new Map(), glowSprites = new Map();
+  const clearCaches = () => { bodyGrads.clear(); finGrads.clear(); glowSprites.clear(); };
+
+  /* Every rgba()/shade() call allocates (string replace + parseHex array +
+   * template literal). Called ~6x per fish per frame that was ~86k allocations
+   * a second at 60 fish, which showed up as periodic GC stutter. All of it is
+   * derivable up front, so the draw path now only reads these. */
+  const TP = {};
+  function bakeThemePaint() {
+    TP.outline    = rgba(theme.dark ? '#ffffff' : '#2a3550', theme.dark ? 0.18 : 0.13);
+    TP.gill       = rgba('#2a3550', 0.16);
+    TP.eyeWhite   = theme.dark ? '#f2f6ff' : '#ffffff';
+    TP.pupil      = '#39415a';
+    TP.pupilPred  = '#232a3d';
+    TP.catchlight = 'rgba(255,255,255,0.9)';
+    TP.bubbleFill = rgba(theme.bubble, 0.28);
+    TP.bubbleLine = rgba(theme.bubble, 0.7);
+    TP.bubbleHi   = rgba(theme.bubble, 0.75);
+    TP.food       = theme.dark ? '#ffd9a8' : '#ff9f68';
+    TP.name       = theme.dark ? 'rgba(230,238,255,.72)' : 'rgba(45,60,85,.6)';
+  }
+  function prepPaint(f) {
+    f.pFin70  = rgba(f.finColor, 0.7);
+    f.pFin60  = rgba(f.finColor, 0.6);
+    f.pFin32  = rgba(f.finColor, 0.32);
+    f.pFin50  = rgba(f.finColor, 0.5);
+    f.pPattern = shade(f.color, -70);
+    f.pBody   = bodyGradient(f.color, f.sp.height, !!f.isPredator);
+    f.pStripe = f.isPredator ? rgba('#0d1524', 0.34) : null;
+    f.pOutline = f.isPredator ? rgba('#0d1524', 0.45) : null;
+    f.pTail   = finGradient(f.finColor, f.sp.tailLen);
+    f.pGlow   = theme.glow ? glowSprite(f.color) : null;
+  }
+  function prepAllPaint() {
+    for (const f of allFish) prepPaint(f);
+    if (predator) prepPaint(predator);
+  }
+
+  const sandTopAt = x => H - sandH * 0.55
+      - Math.sin(x * 0.006 + 1.2) * sandH * 0.28
+      - Math.sin(x * 0.017) * sandH * 0.12;
+
+  /* --- procedural tileable caustic texture (built once per resize) --- */
+  function makeCausticTile() {
+    const N = 192;
+    const c = document.createElement('canvas');
+    c.width = c.height = N;
+    const cx = c.getContext('2d');
+    const img = cx.createImageData(N, N), d = img.data;
+    for (let y = 0; y < N; y++) {
+      const v = y / N * TAU;
+      for (let x = 0; x < N; x++) {
+        const u = x / N * TAU;
+        // all terms are 2π-periodic in u and v, so the tile seams cleanly
+        let s = Math.sin(u * 2 + Math.cos(v)) + Math.sin(v * 3 - Math.cos(u * 2)) + Math.sin((u + v) * 2);
+        s = Math.abs(s) / 3;
+        const a = Math.pow(1 - Math.min(1, s), 7);   // thin bright filaments
+        const i = (y * N + x) * 4;
+        d[i] = d[i + 1] = d[i + 2] = 255;
+        d[i + 3] = a * 255;
+      }
+    }
+    cx.putImageData(img, 0, 0);
+    return c;
+  }
+
+  function makeShadowSprite() {
+    const N = 64;
+    const c = document.createElement('canvas');
+    c.width = c.height = N;
+    const cx = c.getContext('2d');
+    const g = cx.createRadialGradient(N / 2, N / 2, 0, N / 2, N / 2, N / 2);
+    g.addColorStop(0, 'rgba(0,0,0,0.42)');
+    g.addColorStop(0.55, 'rgba(0,0,0,0.16)');
+    g.addColorStop(1, 'rgba(0,0,0,0)');
+    cx.fillStyle = g;
+    cx.fillRect(0, 0, N, N);
+    return c;
+  }
+
+  function bakeLayers() {
+    for (const c of [bgCanvas, sandCanvas]) { c.width = canvas.width; c.height = canvas.height; }
+    for (const c of [bgCtx, sandCtx]) c.setTransform(DPR, 0, 0, DPR, 0, 0);
+    farCanvas.width = Math.max(1, Math.floor(canvas.width * FAR_SCALE));
+    farCanvas.height = Math.max(1, Math.floor(canvas.height * FAR_SCALE));
+    fxCanvas.width = Math.max(1, Math.ceil(W * FX_SCALE));
+    fxCanvas.height = Math.max(1, Math.ceil(H * FX_SCALE));
+
+    bgCtx.clearRect(0, 0, W, H);
+    const g = bgCtx.createLinearGradient(0, 0, 0, H);
+    g.addColorStop(0, theme.water[0]);
+    g.addColorStop(0.55, theme.water[1]);
+    g.addColorStop(1, theme.water[2]);
+    bgCtx.fillStyle = g;
+    bgCtx.fillRect(0, 0, W, H);
+
+    // NB: no baked top shimmer here — drawSurface() owns the waterline now.
+    // Baking one made the top near-white, and the stacked soft-light passes
+    // (rays + caustics) then saturated it to pure white.
+    const vg = bgCtx.createRadialGradient(W * 0.5, H * 0.42, Math.min(W, H) * 0.25,
+                                          W * 0.5, H * 0.42, Math.max(W, H) * 0.78);
+    vg.addColorStop(0, 'rgba(0,0,0,0)');
+    vg.addColorStop(1, theme.dark ? 'rgba(0,0,0,0.42)' : 'rgba(20,50,80,0.14)');
+    bgCtx.fillStyle = vg;
+    bgCtx.fillRect(0, 0, W, H);
+
+    // --- sand (pebble scatter is seeded so a tank looks the same every visit) ---
+    sandCtx.clearRect(0, 0, W, H);
+    sandH = H * 0.09;
+    sandCtx.beginPath();
+    sandCtx.moveTo(0, H);
+    sandCtx.lineTo(0, sandTopAt(0));
+    for (let x = 0; x <= W; x += 14) sandCtx.lineTo(x, sandTopAt(x));
+    sandCtx.lineTo(W, H);
+    sandCtx.closePath();
+    const sandGrad = sandCtx.createLinearGradient(0, H - sandH, 0, H);
+    sandGrad.addColorStop(0, theme.sand);
+    sandGrad.addColorStop(1, theme.dark ? '#20223c' : shade(theme.sand, -34));
+    sandCtx.fillStyle = sandGrad;
+    sandCtx.fill();
+
+    sandCtx.save();
+    sandCtx.clip();
+    const prng = makeRng(SEED ^ 0x1234abcd);
+    for (let i = 0; i < 70; i++) {
+      const px = prng() * W, py = H - sandH * 0.5 + prng() * sandH * 0.6;
+      sandCtx.beginPath();
+      sandCtx.ellipse(px, py, rr(prng, 1.5, 4.5), rr(prng, 1, 3), rr(prng, 0, Math.PI), 0, TAU);
+      sandCtx.fillStyle = prng() < 0.5 ? shade(theme.sand, -26) : shade(theme.sand, 20);
+      sandCtx.globalAlpha = 0.5;
+      sandCtx.fill();
+    }
+    sandCtx.restore();
+
+    rayGrad = ctx.createLinearGradient(0, 0, 0, H * 0.95);
+    rayGrad.addColorStop(0, theme.ray);
+    rayGrad.addColorStop(1, 'rgba(255,255,255,0)');
+
+    if (!causticPat) causticPat = ctx.createPattern(makeCausticTile(), 'repeat');
+    if (!shadowSprite) shadowSprite = makeShadowSprite();
+  }
+
+  function resize() {
+    W = window.innerWidth; H = window.innerHeight;
+    // Cap total canvas pixels rather than DPR alone: a 2560x1440 retina window
+    // at DPR 2 is 14.7M pixels, and every full-screen pass pays for all of them.
+    const want = Math.min(window.devicePixelRatio || 1, 2);
+    // Floor at 1.0: rendering below CSS resolution upscales by a non-integer
+    // factor, and the resulting sub-pixel crawl on moving edges reads as lag
+    // even at a perfect frame rate. Shed effects before shedding sharpness.
+    DPR = Math.max(1, Math.min(want, Math.sqrt(PX_BUDGET[qLevel] / Math.max(1, W * H))));
+    sandH = H * 0.09;
+    floorY = H - H * 0.055;
+    canvas.width = Math.max(1, Math.floor(W * DPR));
+    canvas.height = Math.max(1, Math.floor(H * DPR));
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    bakeLayers();
+    buildPlants();
+    for (const f of allFish) { f.x = Math.min(f.x, W); f.y = Math.min(f.y, floorY - f.size); }
+  }
+  window.addEventListener('resize', resize);
+
+  /* ------------------------------------------------------------------ *
+   *  Cached paint                                                       *
+   * ------------------------------------------------------------------ */
+  function bodyGradient(color, height, strong) {
+    const key = color + '|' + height + '|' + (strong ? 1 : 0);
+    let g = bodyGrads.get(key);
+    if (!g) {
+      g = ctx.createLinearGradient(0, -height * 0.55, 0, height * 0.55);
+      g.addColorStop(0, shade(color, strong ? -78 : -34));
+      g.addColorStop(0.38, color);
+      g.addColorStop(1, shade(color, strong ? 18 : 40));
+      bodyGrads.set(key, g);
+    }
+    return g;
+  }
+  function finGradient(color, len) {
+    const key = color + '|' + len;
+    let g = finGrads.get(key);
+    if (!g) {
+      g = ctx.createLinearGradient(0, 0, len, 0);
+      g.addColorStop(0, rgba(color, 0.95));
+      g.addColorStop(1, rgba(color, 0.42));
+      finGrads.set(key, g);
+    }
+    return g;
+  }
+  function glowSprite(color) {
+    let s = glowSprites.get(color);
+    if (!s) {
+      const R = 64;
+      s = document.createElement('canvas');
+      s.width = s.height = R * 2;
+      const c = s.getContext('2d');
+      const g = c.createRadialGradient(R, R, 0, R, R, R);
+      g.addColorStop(0, rgba(color, 0.55));
+      g.addColorStop(0.45, rgba(color, 0.18));
+      g.addColorStop(1, rgba(color, 0));
+      c.fillStyle = g;
+      c.fillRect(0, 0, R * 2, R * 2);
+      glowSprites.set(color, s);
+    }
+    return s;
+  }
+
+  /* ------------------------------------------------------------------ *
+   *  World                                                              *
+   * ------------------------------------------------------------------ */
+  let school = [];         // count-managed fish
+  let customFish = [];     // player-designed, persist outside the count
+  let allFish = [];
+  let predator = null;
+  let plants = [];
+  const bubbles = [], food = [];
+
+  // Level-of-detail scale: a crowded tank draws each fish more cheaply, since
+  // at 100+ fish they are small, overlapping and individually unscrutinised.
+  let LOD_SCALE = 1;
+  // Size is applied as a live multiplier so the slider can rescale existing fish
+  // without regenerating the tank (which would change the seeded layout).
+  function applySize() {
+    const k = S.size / 100;
+    for (let i = 0; i < allFish.length; i++) allFish[i].size = allFish[i].baseSize * k;
+    if (predator) predator.size = predator.baseSize * k;
+    updateLod();
+  }
+  function updateLod() {
+    const n = allFish.length;
+    LOD_SCALE = (FX.lod ? 0.55 : 1) * (n > 90 ? 0.58 : n > 55 ? 0.76 : 1);
+  }
+  const rebuildAll = () => {
+    allFish = school.concat(customFish);
+    const k = S.size / 100;
+    for (let i = 0; i < allFish.length; i++) allFish[i].size = allFish[i].baseSize * k;
+    updateLod();
+  };
+
+  // Each fish gets its own PRNG stream from the seed, so changing the count
+  // never perturbs the fish that already exist.
+  function makeFish(i) {
+    const rng = makeRng((SEED ^ 0x5bf03635) + Math.imul(i + 1, 2654435761));
+    const depth = rng();
+    const sp = rpick(rng, SPECIES_BAG);
+    const color = rpick(rng, theme.fish);
+    const f = {
+      sp, depth, color,
+      finColor: rng() < 0.35 ? rpick(rng, theme.fish) : color,
+      x: rng() * Math.max(W, 1), y: rr(rng, H * 0.08, Math.max(H * 0.09, floorY - 40)),
+      baseSize: (11 + depth * 20 + rr(rng, -2, 3)) / sp.len * 1.8,
+      baseSpeed: rr(rng, 26, 46) * (0.55 + depth * 0.75) / sp.len * 1.8,
+      heading: rng() < 0.5 ? rr(rng, -0.4, 0.4) : Math.PI + rr(rng, -0.4, 0.4),
+      wobble: rr(rng, 0, TAU), wobbleSpeed: rr(rng, 0.5, 1.1),
+      tailPhase: rr(rng, 0, TAU),
+      beat: rr(rng, 5.5, 7.5) * (REDUCED ? 0.55 : 1),
+      flexScale: rr(rng, 0.85, 1.25),
+      curious: rng() < 0.45,
+      turnTimer: rr(rng, 0.5, 4),
+      pattern: rng() < 0.28 ? 'stripes' : rng() < 0.3 ? 'spots' : 'none',
+      boost: 1, state: 'calm', stateT: 0, custom: false, name: ''
+    };
+    f.angle = f.heading;
+    f.size = f.baseSize * (S.size / 100);
+    prepPaint(f);
+    return f;
+  }
+
+  function makeCustomFish(spec, i) {
+    const sp = SPECIES_BY_ID[spec.sp] || SPECIES[0];
+    const f = {
+      sp, depth: 0.85, color: spec.color, finColor: spec.finColor,
+      x: rand(0, Math.max(W, 1)), y: rand(H * 0.15, Math.max(H * 0.2, floorY - 60)),
+      baseSize: (26 * (spec.sizeMul || 1.4)) / sp.len * 1.8,
+      baseSpeed: 40 / sp.len * 1.8,
+      heading: rand(0, TAU), wobble: rand(0, TAU), wobbleSpeed: rand(0.5, 1.1),
+      tailPhase: rand(0, TAU), beat: rand(5.5, 7) * (REDUCED ? 0.55 : 1),
+      flexScale: 1.05, curious: true, turnTimer: rand(0.5, 3),
+      pattern: spec.pattern || 'none',
+      boost: 1, state: 'calm', stateT: 0, custom: true, name: spec.name || ''
+    };
+    f.angle = f.heading;
+    f.size = f.baseSize * (S.size / 100);
+    prepPaint(f);
+    return f;
+  }
+
+  function syncFishCount() {
+    while (school.length < S.count) school.push(makeFish(school.length));
+    while (school.length > S.count) school.pop();
+    school.sort((a, b) => a.depth - b.depth);
+    rebuildAll();
+  }
+  function rebuildCustom() {
+    customFish = S.custom.map(makeCustomFish);
+    rebuildAll();
+  }
+  function regenWorld() {
+    school = [];
+    syncFishCount();
+    buildPlants();
+    bakeLayers();
+  }
+  function recolorFish() {
+    for (let i = 0; i < school.length; i++) {
+      const rng = makeRng((SEED ^ 0x5bf03635) + Math.imul(i + 1, 2654435761) + 77);
+      school[i].color = rpick(rng, theme.fish);
+      school[i].finColor = rng() < 0.35 ? rpick(rng, theme.fish) : school[i].color;
+    }
+    if (predator) predator.color = predator.finColor = theme.predator;
+    prepAllPaint();
+  }
+
+  function makePredator() {
+    const f = {
+      sp: HUNTER, depth: 1, color: theme.predator, finColor: theme.predator,
+      x: rand(0, Math.max(W, 1)), y: H * 0.4,
+      baseSize: 55 / HUNTER.len * 1.8, baseSpeed: 42 / HUNTER.len * 1.8,
+      heading: 0, wobble: 0, wobbleSpeed: 0.6, tailPhase: 0,
+      beat: 4.4 * (REDUCED ? 0.55 : 1), flexScale: 1.15, curious: false,
+      turnTimer: 2, pattern: 'none', boost: 1, state: 'calm', stateT: 0,
+      custom: false, name: '', isPredator: true
+    };
+    f.angle = f.heading;
+    f.size = f.baseSize * (S.size / 100);
+    prepPaint(f);
+    return f;
+  }
+
+  function buildPlants() {
+    plants = [];
+    const prng = makeRng(SEED ^ 0x9e3779b9);
+    const n = Math.max(4, Math.round(W / 150));
+    for (let i = 0; i < n; i++) {
+      const blades = [];
+      const bx = (i + rr(prng, 0.15, 0.85)) * (W / n);
+      for (let b = 0, m = 3 + ((prng() * 3) | 0); b < m; b++) {
+        blades.push({
+          dx: rr(prng, -22, 22), h: rr(prng, H * 0.12, H * 0.34), w: rr(prng, 5, 11),
+          phase: rr(prng, 0, TAU), speed: rr(prng, 0.35, 0.75), shade: prng()
+        });
+      }
+      plants.push({ x: bx, blades });
+    }
+  }
+
+  /* ------------------------------------------------------------------ *
+   *  Spatial hash — keeps boid neighbour queries near O(n)              *
+   * ------------------------------------------------------------------ */
+  const CELL = 110;
+  const cells = new Map();
+  const cellBuckets = [];                 // flat list, so no Map iterator per frame
+  const cellKey = (cx, cy) => cx * 100000 + cy;
+  function rebuildGrid() {
+    for (let i = 0; i < cellBuckets.length; i++) cellBuckets[i].length = 0;
+    for (let i = 0; i < allFish.length; i++) {
+      const f = allFish[i];
+      const k = cellKey(Math.floor(f.x / CELL), Math.floor(f.y / CELL));
+      let arr = cells.get(k);
+      if (!arr) { arr = []; cells.set(k, arr); cellBuckets.push(arr); }
+      arr.push(f);
+    }
+  }
+
+  /* ------------------------------------------------------------------ *
+   *  Fish rendering                                                     *
+   * ------------------------------------------------------------------ */
+  const SAMP = 14, FIN_N = 8;
+  const RX = new Float32Array((SAMP + 1) * 2), RY = new Float32Array((SAMP + 1) * 2);
+  const BX = new Float32Array((SAMP + 1) * 2), BY = new Float32Array((SAMP + 1) * 2);
+
+  function ringPathOn(xs, ys, n) {
+    dc.beginPath();
+    dc.moveTo((xs[n - 1] + xs[0]) * 0.5, (ys[n - 1] + ys[0]) * 0.5);
+    for (let i = 0; i < n; i++) {
+      const j = (i + 1) % n;
+      dc.quadraticCurveTo(xs[i], ys[i], (xs[i] + xs[j]) * 0.5, (ys[i] + ys[j]) * 0.5);
+    }
+    dc.closePath();
+  }
+  const ringPath = n => ringPathOn(RX, RY, n);
+
+  function drawTail(f, sp, phase) {
+    const k = f.flexScale;
+    const x1 = bodyX(sp, 0.94), y1 = spineY(sp, 0.94, phase, k);
+    const x0 = bodyX(sp, 0.80), y0 = spineY(sp, 0.80, phase, k);
+    const L = sp.tailLen, Sp = sp.tailSpread;
+    dc.save();
+    dc.translate(x1, y1);
+    dc.rotate(Math.atan2(y1 - y0, x1 - x0));
+    dc.beginPath();
+    dc.moveTo(0, 0);
+    if (sp.tail === 'fork') {
+      dc.quadraticCurveTo(L * 0.55, -Sp * 0.45, L, -Sp);
+      dc.quadraticCurveTo(L * 0.52, -Sp * 0.22, L * 0.44, 0);
+      dc.quadraticCurveTo(L * 0.52, Sp * 0.22, L, Sp);
+      dc.quadraticCurveTo(L * 0.55, Sp * 0.45, 0, 0);
+    } else if (sp.tail === 'veil') {
+      const rip = Math.sin(phase * 0.8) * 0.16;
+      dc.bezierCurveTo(L * 0.4, -Sp * 0.5, L * 0.8, -Sp * 0.95, L, -Sp * (0.7 + rip));
+      dc.bezierCurveTo(L * 0.7, -Sp * 0.2, L * 0.7, Sp * 0.2, L, Sp * (0.7 - rip));
+      dc.bezierCurveTo(L * 0.8, Sp * 0.95, L * 0.4, Sp * 0.5, 0, 0);
+    } else if (sp.tail === 'round') {
+      dc.quadraticCurveTo(L * 0.7, -Sp, L * 1.05, 0);
+      dc.quadraticCurveTo(L * 0.7, Sp, 0, 0);
+    } else {
+      dc.quadraticCurveTo(L * 0.5, -Sp * 0.55, L, -Sp);
+      dc.quadraticCurveTo(L * 0.72, 0, L, Sp);
+      dc.quadraticCurveTo(L * 0.5, Sp * 0.55, 0, 0);
+    }
+    dc.fillStyle = f.pTail;
+    dc.fill();
+    dc.restore();
+  }
+
+  function drawVFin(f, sp, phase, spec, dir) {
+    const u0 = spec[0], u1 = spec[1], h = spec[2], k = f.flexScale;
+    let n = 0;
+    for (let i = 0; i <= FIN_N; i++) {
+      const u = u0 + (u1 - u0) * (i / FIN_N);
+      RX[n] = bodyX(sp, u);
+      RY[n] = spineY(sp, u, phase, k) + dir * halfH(sp, u) * 0.82;
+      n++;
+    }
+    for (let i = FIN_N; i >= 0; i--) {
+      const tt = i / FIN_N, u = u0 + (u1 - u0) * tt;
+      const lift = h * Math.sin(Math.PI * Math.pow(tt, 0.7));
+      RX[n] = bodyX(sp, u);
+      RY[n] = spineY(sp, u, phase, k) + dir * (halfH(sp, u) * 0.82 + lift);
+      n++;
+    }
+    ringPath(n);
+    dc.fillStyle = f.pFin70;
+    dc.fill();
+  }
+
+  function drawFilament(f, sp, phase, spec, dir) {
+    const u0 = spec[0], u1 = spec[1], h = spec[2], k = f.flexScale;
+    const u = u0 + (u1 - u0) * 0.55;
+    const x = bodyX(sp, u);
+    const y = spineY(sp, u, phase, k) + dir * (halfH(sp, u) * 0.82 + h * 0.95);
+    const L = sp.len * 0.85, wav = Math.sin(phase * 0.7) * 0.1;
+    dc.beginPath();
+    dc.moveTo(x, y);
+    dc.quadraticCurveTo(x - L * 0.55, y + dir * h * 0.25 + wav, x - L, y + dir * h * 0.05 + wav * 2.2);
+    dc.lineWidth = 0.022;
+    dc.lineCap = 'round';
+    dc.strokeStyle = f.pFin50;
+    dc.stroke();
+  }
+
+  function drawPectoral(f, sp, phase, t, front) {
+    const k = f.flexScale, u = 0.33;
+    const bx = bodyX(sp, u), by = spineY(sp, u, phase, k) + halfH(sp, u) * 0.25;
+    const flap = 0.55 + 0.45 * Math.sin(t * f.beat * 0.9 + f.tailPhase + (front ? 0 : 1.4));
+    const L = sp.len * 0.30, drop = sp.height * 0.32 * flap;
+    dc.beginPath();
+    dc.moveTo(bx, by - sp.height * 0.05);
+    dc.quadraticCurveTo(bx - L * 0.6, by + drop * 0.55, bx - L, by + drop);
+    dc.quadraticCurveTo(bx - L * 0.3, by + drop * 0.22, bx, by - sp.height * 0.05);
+    dc.closePath();
+    dc.fillStyle = front ? f.pFin60 : f.pFin32;
+    dc.fill();
+  }
+
+  function drawFish(f, t) {
+    const sp = f.sp, s = f.size;
+    const reach = s * (sp.len + sp.tailLen);
+    if (f.x + reach < 0 || f.x - reach > W) return;
+
+    // Level of detail: a 15px fish doesn't need a gill slit or a catchlight.
+    // Cuts the per-fish draw calls from 12 to ~4 for the small/far ones.
+    const px = s * sp.len * LOD_SCALE;
+    const detail = px > 26 ? 2 : px > 13 ? 1 : 0;
+
+    const phase = t * f.beat * f.boost + f.tailPhase;
+    const k = f.flexScale;
+    const samp = detail === 2 ? SAMP : 8;
+
+    dc.save();
+    dc.translate(f.x, f.y);
+    dc.rotate(f.angle);
+    if (Math.cos(f.angle) < 0) dc.scale(1, -1);
+    dc.scale(s, s);
+    dc.globalAlpha = 0.4 + f.depth * 0.6;
+
+    if (theme.glow) {
+      const gs = f.pGlow, R = sp.len * 1.15;
+      dc.globalAlpha *= 0.85;
+      dc.drawImage(gs, -R, -R, R * 2, R * 2);
+      dc.globalAlpha /= 0.85;
+    }
+
+    drawTail(f, sp, phase);
+    drawVFin(f, sp, phase, sp.dorsal, -1);
+    if (detail >= 1) drawVFin(f, sp, phase, sp.anal, 1);
+    if (sp.filament && detail === 2) {
+      drawFilament(f, sp, phase, sp.dorsal, -1);
+      drawFilament(f, sp, phase, sp.anal, 1);
+    }
+    if (detail >= 1) drawPectoral(f, sp, phase, t, false);
+
+    let n = 0;
+    for (let i = 0; i <= samp; i++) {
+      const u = i / samp;
+      RX[n] = bodyX(sp, u); RY[n] = spineY(sp, u, phase, k) - halfH(sp, u); n++;
+    }
+    for (let i = samp; i >= 0; i--) {
+      const u = i / samp;
+      RX[n] = bodyX(sp, u); RY[n] = spineY(sp, u, phase, k) + halfH(sp, u); n++;
+    }
+    ringPath(n);
+    dc.fillStyle = f.pBody;
+    dc.fill();
+
+    if (f.pattern !== 'none' && detail === 2) {
+      dc.save();
+      dc.clip();
+      dc.globalAlpha *= 0.22;
+      dc.fillStyle = f.pPattern;
+      if (f.pattern === 'stripes') {
+        for (let i = 0; i < 4; i++) {
+          const u = 0.24 + i * 0.17;
+          dc.beginPath();
+          dc.ellipse(bodyX(sp, u), spineY(sp, u, phase, k), sp.len * 0.045, sp.height * 0.6, 0, 0, TAU);
+          dc.fill();
+        }
+      } else {
+        for (let i = 0; i < 9; i++) {
+          const u = 0.18 + (i % 3) * 0.24, row = ((i / 3) | 0) - 1;
+          dc.beginPath();
+          dc.arc(bodyX(sp, u), spineY(sp, u, phase, k) + row * sp.height * 0.26, sp.height * 0.075, 0, TAU);
+          dc.fill();
+        }
+      }
+      dc.restore();
+    }
+
+    // A dark dorsal band down the back — the strongest single cue that reads as
+    // "predator" at a glance, and it follows the flexing spine.
+    if (f.isPredator && detail >= 1) {
+      ringPath(n);
+      dc.save();
+      dc.clip();
+      let m = 0;
+      for (let i = 0; i <= samp; i++) {
+        const u = i / samp;
+        BX[m] = bodyX(sp, u); BY[m] = spineY(sp, u, phase, k) - halfH(sp, u); m++;
+      }
+      for (let i = samp; i >= 0; i--) {
+        const u = i / samp;
+        BX[m] = bodyX(sp, u);
+        BY[m] = spineY(sp, u, phase, k) - halfH(sp, u) + sp.height * 0.40; m++;
+      }
+      ringPathOn(BX, BY, m);
+      dc.fillStyle = f.pStripe;
+      dc.fill();
+      dc.restore();
+    }
+
+    if (detail === 2 || f.isPredator) {
+      // restore() rolls back state but NOT the current path — re-issue before stroking
+      ringPath(n);
+      dc.lineWidth = f.isPredator ? 0.028 : 0.022;
+      dc.strokeStyle = f.pOutline || TP.outline;
+      dc.stroke();
+
+      const gu = 0.26, gx = bodyX(sp, gu), gy = spineY(sp, gu, phase, k), gh = halfH(sp, gu);
+      dc.beginPath();
+      dc.moveTo(gx + sp.len * 0.03, gy - gh * 0.72);
+      dc.quadraticCurveTo(gx - sp.len * 0.05, gy, gx + sp.len * 0.03, gy + gh * 0.7);
+      if (detail === 2) {
+        dc.lineWidth = 0.018;
+        dc.strokeStyle = TP.gill;
+        dc.stroke();
+      }
+    }
+
+    if (detail >= 1) drawPectoral(f, sp, phase, t, true);
+
+    const eu = sp.eyeU;
+    const ex = bodyX(sp, eu), ey = spineY(sp, eu, phase, k) - halfH(sp, eu) * 0.34;
+    const er = sp.height * (f.isPredator ? 0.085 : 0.11);
+    dc.beginPath(); dc.arc(ex, ey, er, 0, TAU);
+    dc.fillStyle = f.isPredator ? '#ffc46b' : TP.eyeWhite; dc.fill();
+    dc.beginPath(); dc.arc(ex + er * 0.22, ey, er * 0.52, 0, TAU);
+    dc.fillStyle = f.isPredator ? TP.pupilPred : TP.pupil; dc.fill();
+    if (detail === 2) {
+      dc.beginPath(); dc.arc(ex + er * 0.05, ey - er * 0.3, er * 0.2, 0, TAU);
+      dc.fillStyle = TP.catchlight; dc.fill();
+    }
+
+    dc.restore();
+  }
+
+  function drawShadows() {
+    ctx.save();
+    for (let i = 0; i < allFish.length; i++) {
+      const f = allFish[i];
+      const top = sandTopAt(f.x);
+      const drop = clamp((top - f.y) / (H * 0.5), 0, 1);       // higher fish → softer, fainter
+      const w = f.size * f.sp.len * (1.5 + drop * 1.1);
+      const h = w * 0.30;
+      ctx.globalAlpha = (1 - drop) * 0.3 * (0.35 + f.depth * 0.65);
+      ctx.drawImage(shadowSprite, f.x - w / 2, top + sandH * 0.14 - h / 2, w, h);
+    }
+    ctx.restore();
+  }
+
+  function drawNames() {
+    if (!customFish.length) return;
+    ctx.save();
+    ctx.font = '600 11px ui-rounded, system-ui, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillStyle = TP.name;
+    for (let i = 0; i < customFish.length; i++) {
+      const f = customFish[i];
+      if (!f.name) continue;
+      ctx.fillText(f.name, f.x, f.y - f.size * f.sp.height * 0.85 - 7);
+    }
+    ctx.restore();
+  }
+
+  /* ------------------------------------------------------------------ *
+   *  Scenery                                                            *
+   * ------------------------------------------------------------------ */
+  // Rays + caustics both render into one small offscreen with plain source-over,
+  // then composite to the main canvas with a SINGLE blended drawImage. Previously
+  // this was ~9 full-screen blended passes (5 ray polys + 4 pattern fills); a
+  // blended full-screen pattern fill is one of the most expensive things in 2D
+  // canvas, and at DPR 2 on a large display it was the whole frame budget.
+  const DM = typeof DOMMatrix === 'function' ? new DOMMatrix() : null;
+  function drawLight(t) {
+    if (!FX.rays && !FX.caustics) return;
+    const tt = REDUCED ? 0 : t;
+    fxCtx.setTransform(FX_SCALE, 0, 0, FX_SCALE, 0, 0);
+    fxCtx.clearRect(0, 0, W, H);
+
+    if (FX.rays) {
+      fxCtx.fillStyle = rayGrad;
+      const rays = 5, wTop = W * 0.05, wBot = W * 0.16;
+      for (let i = 0; i < rays; i++) {
+        const x = (i + 0.5) * (W / rays) + Math.sin(tt * 0.16 + i * 1.7) * W * 0.045;
+        fxCtx.beginPath();
+        fxCtx.moveTo(x - wTop / 2, -20);
+        fxCtx.lineTo(x + wTop / 2, -20);
+        fxCtx.lineTo(x + wBot / 2 + 60, H * 0.95);
+        fxCtx.lineTo(x - wBot / 2 + 60, H * 0.95);
+        fxCtx.closePath();
+        fxCtx.fill();
+      }
+    }
+
+    if (FX.caustics && causticPat && causticPat.setTransform && DM) {
+      for (let i = 0; i < 2; i++) {
+        const sc = i ? 2.4 : 1.5;
+        const ox = (i ? -tt * 9 : tt * 14) % (192 * sc);
+        const oy = (i ? tt * 6 : tt * 4) % (192 * sc);
+        causticPat.setTransform(DM.translateSelf(ox, oy).scaleSelf(sc));
+        DM.scaleSelf(1 / sc).translateSelf(-ox, -oy);      // reuse one matrix, no alloc
+        fxCtx.fillStyle = causticPat;
+        fxCtx.globalAlpha = i ? 0.10 : 0.14;
+        fxCtx.fillRect(0, 0, W, H);
+        fxCtx.globalAlpha = i ? 0.26 : 0.32;
+        fxCtx.fillRect(0, H - sandH * 1.5, W, sandH * 1.5);   // pooled on the floor
+      }
+      fxCtx.globalAlpha = 1;
+    }
+
+    ctx.save();
+    if (FX.blend) ctx.globalCompositeOperation = theme.dark ? 'lighter' : 'soft-light';
+    else ctx.globalAlpha = theme.dark ? 0.85 : 0.55;   // plain source-over is far cheaper
+    ctx.drawImage(fxCanvas, 0, 0, W, H);
+    ctx.restore();
+  }
+
+  // Waterline: a soft band that fades downward plus a thin travelling highlight.
+  // Kept on source-over — 'lighter' blows straight out to white on pale themes.
+  const surfWave = (x, tt, bandH) => bandH
+    + Math.sin(x * 0.011 + tt * 1.1) * bandH * 0.30
+    + Math.sin(x * 0.027 - tt * 0.7) * bandH * 0.16;
+  let surfGrad = null, surfGradH = -1;
+  function drawSurface(t) {
+    const tt = REDUCED ? 0 : t;
+    const bandH = H * 0.05;
+    // module-level helper rather than a closure rebuilt every frame
+    const waveAt = x => surfWave(x, tt, bandH);
+    if (surfGradH !== bandH) {
+      surfGrad = ctx.createLinearGradient(0, 0, 0, bandH * 1.5);
+      surfGrad.addColorStop(0, theme.dark ? 'rgba(168,196,255,0.16)' : 'rgba(255,255,255,0.24)');
+      surfGrad.addColorStop(1, 'rgba(255,255,255,0)');
+      surfGradH = bandH;
+    }
+    ctx.save();
+    ctx.beginPath();
+    ctx.moveTo(0, 0);
+    ctx.lineTo(W, 0);
+    ctx.lineTo(W, bandH);
+    for (let x = W; x >= 0; x -= 12) ctx.lineTo(x, waveAt(x));
+    ctx.closePath();
+    ctx.fillStyle = surfGrad;
+    ctx.fill();
+
+    ctx.beginPath();
+    ctx.moveTo(0, waveAt(0));
+    for (let x = 12; x <= W; x += 12) ctx.lineTo(x, waveAt(x));
+    ctx.lineWidth = 1.5;
+    ctx.strokeStyle = theme.dark ? 'rgba(190,215,255,0.28)' : 'rgba(255,255,255,0.5)';
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  function drawPlants(t) {
+    const tt = REDUCED ? 0 : t;
+    ctx.save();
+    ctx.lineCap = 'round';
+    ctx.globalAlpha = 0.75;
+    const baseY = H - H * 0.06;
+    for (let pass = 0; pass < 2; pass++) {
+      ctx.strokeStyle = theme.plant[pass];
+      for (let pi = 0; pi < plants.length; pi++) {
+        const p = plants[pi];
+        for (let bi = 0; bi < p.blades.length; bi++) {
+          const b = p.blades[bi];
+          if ((b.shade > 0.5 ? 0 : 1) !== pass) continue;
+          const bx = p.x + b.dx;
+          const sway = Math.sin(tt * b.speed + b.phase) * (b.h * 0.14);
+          ctx.lineWidth = b.w;
+          ctx.beginPath();
+          ctx.moveTo(bx, baseY);
+          ctx.quadraticCurveTo(bx + sway * 0.4, baseY - b.h * 0.55, bx + sway, baseY - b.h);
+          ctx.stroke();
+        }
+      }
+    }
+    ctx.restore();
+  }
+
+  function drawBubbles() {
+    if (!bubbles.length) return;
+    ctx.save();
+    ctx.beginPath();
+    for (let i = 0; i < bubbles.length; i++) { const b = bubbles[i]; ctx.moveTo(b.x + b.r, b.y); ctx.arc(b.x, b.y, b.r, 0, TAU); }
+    ctx.fillStyle = TP.bubbleFill; ctx.fill();
+    ctx.strokeStyle = TP.bubbleLine; ctx.lineWidth = 1; ctx.stroke();
+    ctx.beginPath();
+    for (let i = 0; i < bubbles.length; i++) {
+      const b = bubbles[i];
+      const hr = b.r * 0.3, hx = b.x - b.r * 0.34, hy = b.y - b.r * 0.34;
+      ctx.moveTo(hx + hr, hy); ctx.arc(hx, hy, hr, 0, TAU);
+    }
+    ctx.fillStyle = TP.bubbleHi; ctx.fill();
+    ctx.restore();
+  }
+
+  function drawFood() {
+    if (!food.length) return;
+    ctx.save();
+    ctx.fillStyle = TP.food;
+    for (let i = 0; i < food.length; i++) {
+      const p = food[i];
+      ctx.globalAlpha = Math.min(1, p.life);
+      ctx.beginPath(); ctx.arc(p.x, p.y, p.r, 0, TAU); ctx.fill();
+    }
+    ctx.restore();
+  }
+
+  /* ------------------------------------------------------------------ *
+   *  Simulation                                                         *
+   * ------------------------------------------------------------------ */
+  const pointer = { x: -1e5, y: -1e5, speed: 0, idle: 999, active: false };
+
+  function angleLerp(a, b, k) {
+    const d = ((b - a + Math.PI) % TAU + TAU) % TAU - Math.PI;
+    return a + d * clamp(k, 0, 1);
+  }
+
+  const STATE_SPEED = { calm: 1, hungry: 2.1, startled: 2.7, resting: 0.22 };
+
+  function update(dt, t) {
+    const speedMul = S.speed / 100;
+    const margin = 70;
+
+    pointer.idle += dt;
+    pointer.speed *= Math.pow(0.02, dt);
+    if (pointer.idle > 2.5) pointer.active = false;
+
+    for (let i = food.length - 1; i >= 0; i--) {
+      const p = food[i];
+      p.y += p.vy * dt;
+      p.vy = Math.min(p.vy + 12 * dt, 34);
+      p.life -= dt * 0.16;
+      if (p.eaten || p.life <= 0 || p.y > floorY) food.splice(i, 1);
+    }
+
+    if (S.school) rebuildGrid();
+
+    const edgeK = 1 - Math.pow(0.05, dt);
+    const chaseK = 1 - Math.pow(0.0006, dt);
+    const turnK = 1 - Math.pow(0.002, dt);
+    const fleeK = 1 - Math.pow(0.0002, dt);
+    const night = theme.id === 'moonlit';
+
+    for (let fi = 0; fi < allFish.length; fi++) {
+      const f = allFish[fi];
+      f.turnTimer -= dt;
+      if (f.turnTimer <= 0) {
+        // a fish that's found its shoal wanders far less — otherwise the random
+        // kick constantly fights the flocking and the school never tightens
+        f.heading += rand(-0.7, 0.7) * (f.inShoal ? 0.25 : 1);
+        f.turnTimer = rand(0.8, 4.5);
+        // fish occasionally settle down to rest, more often at night
+        if (f.state === 'calm' && Math.random() < (night ? 0.16 : 0.04)) {
+          f.state = 'resting'; f.stateT = rand(3, 9);
+        } else if (f.state === 'resting' && Math.random() < 0.5) {
+          f.state = 'calm';
+        }
+      }
+      f.wobble += f.wobbleSpeed * dt;
+      f.stateT -= dt;
+      if (f.stateT <= 0 && (f.state === 'startled' || f.state === 'resting')) f.state = 'calm';
+
+      // ---------- threats: predator + fast cursor ----------
+      let threatX = 0, threatY = 0, threatened = false;
+      if (predator && !f.isPredator) {
+        const dx = f.x - predator.x, dy = f.y - predator.y;
+        const d2 = dx * dx + dy * dy;
+        const R = 210;
+        if (d2 < R * R && d2 > 1) {
+          const d = Math.sqrt(d2);
+          threatX += dx / d * (1 - d / R); threatY += dy / d * (1 - d / R);
+          threatened = true;
+        }
+      }
+      if (S.cursor && pointer.active && !f.isPredator) {
+        const dx = f.x - pointer.x, dy = f.y - pointer.y;
+        const d2 = dx * dx + dy * dy;
+        const R = 170;
+        if (d2 < R * R && d2 > 1) {
+          const d = Math.sqrt(d2);
+          if (pointer.speed > 420) {                       // a quick swipe scatters them
+            threatX += dx / d * (1 - d / R) * 1.4;
+            threatY += dy / d * (1 - d / R) * 1.4;
+            threatened = true;
+          } else if (f.curious && pointer.idle < 2.0 && d > 55 && f.state === 'calm') {
+            f.heading = angleLerp(f.heading, Math.atan2(-dy, -dx), (1 - Math.pow(0.35, dt)));
+          }
+        }
+      }
+      if (threatened) {
+        f.heading = angleLerp(f.heading, Math.atan2(threatY, threatX), fleeK);
+        if (f.state !== 'startled') { f.state = 'startled'; f.stateT = rand(1.4, 2.8); }
+      }
+
+      // ---------- food ----------
+      let target = null, bestD = 380 * 380;
+      if (!f.isPredator) {
+        for (let pi = 0; pi < food.length; pi++) {
+          const p = food[pi];
+          if (p.eaten) continue;
+          const dx = p.x - f.x, dy = p.y - f.y, d = dx * dx + dy * dy;
+          if (d < bestD) { bestD = d; target = p; }
+        }
+      }
+      if (target && !threatened) {
+        f.heading = angleLerp(f.heading, Math.atan2(target.y - f.y, target.x - f.x), chaseK);
+        if (f.state !== 'startled') f.state = 'hungry';
+        if (bestD < 400) target.eaten = true;
+      } else if (f.state === 'hungry' && !target) {
+        f.state = 'calm';
+      }
+
+      // ---------- schooling ----------
+      const social = f.sp.social;
+      if (S.school && social > 0 && !f.isPredator && f.state !== 'resting') {
+        const cx = Math.floor(f.x / CELL), cy = Math.floor(f.y / CELL);
+        let sepX = 0, sepY = 0, aliX = 0, aliY = 0, cohX = 0, cohY = 0, nAli = 0, nCoh = 0;
+        const R = 95, R2 = R * R, SEP = 34, SEP2 = SEP * SEP;
+        for (let gx = cx - 1; gx <= cx + 1; gx++) {
+          for (let gy = cy - 1; gy <= cy + 1; gy++) {
+            const arr = cells.get(cellKey(gx, gy));
+            if (!arr) continue;
+            for (let oi = 0; oi < arr.length; oi++) {
+              const o = arr[oi];
+              if (o === f) continue;
+              const dx = o.x - f.x, dy = o.y - f.y;
+              const d2 = dx * dx + dy * dy;
+              if (d2 > R2 || d2 < 1e-4) continue;
+              if (d2 < SEP2) {                       // separation: any neighbour, any species
+                const inv = 1 / d2;
+                sepX -= dx * inv * 900; sepY -= dy * inv * 900;
+              }
+              if (o.sp === f.sp) {                   // align + cohere only with own kind
+                aliX += Math.cos(o.heading); aliY += Math.sin(o.heading); nAli++;
+                cohX += dx; cohY += dy; nCoh++;
+              }
+            }
+          }
+        }
+        let wX = 0, wY = 0;
+        const startled = f.state === 'startled';
+        wX += sepX * 1.5; wY += sepY * 1.5;
+        if (nAli) {
+          const aw = 46 * social * (startled ? 0.3 : 1);
+          wX += (aliX / nAli) * aw; wY += (aliY / nAli) * aw;
+        }
+        if (nCoh && !startled) { wX += (cohX / nCoh) * 0.45 * social; wY += (cohY / nCoh) * 0.45 * social; }
+        f.inShoal = nAli >= 2 && social > 0.5;
+        if (wX * wX + wY * wY > 1e-3) {
+          const k = 1 - Math.pow(0.03, dt * social);
+          f.heading = angleLerp(f.heading, Math.atan2(wY, wX), k);
+        }
+      } else {
+        f.inShoal = false;
+      }
+
+      // ---------- edges ----------
+      if (!threatened) {
+        if (f.x < margin) f.heading = angleLerp(f.heading, 0, edgeK);
+        else if (f.x > W - margin) f.heading = angleLerp(f.heading, Math.PI, edgeK);
+      }
+      const dy2 = Math.sin(f.heading);
+      if (f.y < margin && dy2 < 0) f.heading = angleLerp(f.heading, -f.heading, edgeK);
+      else if (f.y > floorY - margin && dy2 > 0) f.heading = angleLerp(f.heading, -f.heading, edgeK);
+
+      f.heading = Math.atan2(Math.sin(f.heading) * 0.985, Math.cos(f.heading));
+
+      const want = STATE_SPEED[f.state] || 1;
+      f.boost += (want - f.boost) * Math.min(1, dt * 2.2);
+      const spd = f.baseSpeed * (S.size / 100) * speedMul * f.boost;
+      f.x += Math.cos(f.heading) * spd * dt;
+      f.y += Math.sin(f.heading) * spd * dt + Math.sin(f.wobble) * 8 * dt;
+
+      const pad = f.size * f.sp.len * 2;
+      if (f.x < -pad) f.x = W + pad;
+      else if (f.x > W + pad) f.x = -pad;
+      f.y = clamp(f.y, f.size * f.sp.height, floorY - f.size * f.sp.height * 0.5);
+
+      f.angle = angleLerp(f.angle, f.heading, turnK);
+    }
+
+    // ---------- predator ----------
+    if (predator) {
+      const p = predator;
+      let best = null, bestD = 1e9;
+      for (let fi = 0; fi < allFish.length; fi++) {
+        const f = allFish[fi];
+        const dx = f.x - p.x, dy = f.y - p.y, d = dx * dx + dy * dy;
+        if (d < bestD) { bestD = d; best = f; }
+      }
+      p.turnTimer -= dt;
+      if (best && bestD < 520 * 520) {
+        p.heading = angleLerp(p.heading, Math.atan2(best.y - p.y, best.x - p.x), 1 - Math.pow(0.25, dt));
+        p.state = 'hungry';
+      } else {
+        if (p.turnTimer <= 0) { p.heading += rand(-0.5, 0.5); p.turnTimer = rand(2, 5); }
+        p.state = 'calm';
+      }
+      if (p.x < margin) p.heading = angleLerp(p.heading, 0, edgeK);
+      else if (p.x > W - margin) p.heading = angleLerp(p.heading, Math.PI, edgeK);
+      const pdy = Math.sin(p.heading);
+      if (p.y < margin && pdy < 0) p.heading = angleLerp(p.heading, -p.heading, edgeK);
+      else if (p.y > floorY - margin && pdy > 0) p.heading = angleLerp(p.heading, -p.heading, edgeK);
+      p.heading = Math.atan2(Math.sin(p.heading) * 0.985, Math.cos(p.heading));
+      const pspd = p.baseSpeed * (S.size / 100) * speedMul * (p.state === 'hungry' ? 1.5 : 0.8);
+      p.x += Math.cos(p.heading) * pspd * dt;
+      p.y += Math.sin(p.heading) * pspd * dt;
+      p.x = clamp(p.x, -100, W + 100);
+      p.y = clamp(p.y, p.size * p.sp.height, floorY - p.size * p.sp.height * 0.5);
+      p.angle = angleLerp(p.angle, p.heading, turnK);
+      p.wobble += p.wobbleSpeed * dt;
+    }
+
+    // ---------- bubbles ----------
+    if (S.bubbles) {
+      if (bubbles.length < 26 && Math.random() < dt * 7) {
+        bubbles.push({ x: rand(0, W), y: H + 10, r: rand(1.6, 5.5), vy: rand(18, 46),
+                       wob: rand(0, TAU), wobAmp: rand(4, 14) });
+      }
+      for (let i = bubbles.length - 1; i >= 0; i--) {
+        const b = bubbles[i];
+        b.y -= b.vy * dt;
+        b.wob += dt * 1.8;
+        b.x += Math.sin(b.wob) * b.wobAmp * dt;
+        if (b.y < -12) bubbles.splice(i, 1);
+      }
+    } else if (bubbles.length) bubbles.length = 0;
+  }
+
+  /* ------------------------------------------------------------------ *
+   *  Loop                                                               *
+   * ------------------------------------------------------------------ */
+  const statsEl = document.getElementById('stats');
+  let last = performance.now(), tSec = 0, fps = 60, statTimer = 0, clockTimer = 0;
+  const DOF_CUT = 0.42;               // fish below this depth render into the blurred layer
+  const QNAME = ['Low', 'Medium', 'High'];
+  function updateStats() {
+    statsEl.textContent = `${Math.round(fps)}/${REFRESH}fps · ${allFish.length + (predator ? 1 : 0)} fish · `
+      + `${QNAME[qLevel]}${S.quality === 'auto' ? ' (auto)' : ''}${autoHalf ? ' ½' : ''} · `
+      + `${(canvas.width / Math.max(W,1)).toFixed(2)}x · #${SEED.toString(36)}`;
+  }
+
+  function render(tSec) {
+    ctx.drawImage(bgCanvas, 0, 0, W, H);
+    drawLight(tSec);
+    if (S.plants) drawPlants(tSec);
+    // the sand layer is transparent above its band — blit only the band
+    const sy = Math.max(0, H - sandH * 1.5);
+    ctx.drawImage(sandCanvas, 0, sy * DPR, sandCanvas.width, (H - sy) * DPR, 0, sy, W, H - sy);
+    if (FX.shadows) drawShadows();
+    drawFood();
+
+    // far fish → low-res layer, composited back up. The upscale alone reads as
+    // defocus. No blur filter is used at any level (see below).
+    if (FX.dof) {
+      farCtx.setTransform(DPR * FAR_SCALE, 0, 0, DPR * FAR_SCALE, 0, 0);
+      farCtx.clearRect(0, 0, W, H);
+      dc = farCtx;
+      if (!(DIAG && DIAG.hideFish))
+        for (let i = 0; i < allFish.length; i++) if (allFish[i].depth < DOF_CUT) drawFish(allFish[i], tSec);
+      dc = ctx;
+      // No ctx.filter here: a 1.4px blur over a full-screen 5MP canvas measured
+       // ~110ms/frame in Firefox (software path). The low-res upscale below gives
+       // the same read of defocus for free.
+      ctx.drawImage(farCanvas, 0, 0, W, H);
+      if (!(DIAG && DIAG.hideFish))
+        for (let i = 0; i < allFish.length; i++) if (allFish[i].depth >= DOF_CUT) drawFish(allFish[i], tSec);
+    } else {
+      if (!(DIAG && DIAG.hideFish))
+        for (let i = 0; i < allFish.length; i++) drawFish(allFish[i], tSec);
+    }
+    if (predator && !(DIAG && DIAG.hideFish)) drawFish(predator, tSec);
+    drawNames();
+
+    if (S.bubbles) drawBubbles();
+    drawSurface(tSec);
+  }
+
+  /* Adaptive quality: watch the median frame time and shed work until the
+   * frame fits. Median (not mean) so one GC pause doesn't trigger a downgrade,
+   * and generous hysteresis + cooldown so it can't oscillate. */
+  const FT = new Float32Array(45);
+  let ftI = 0, ftN = 0, qCool = 0, TARGET_MS = 1000 / 60;
+  let upCool = 15, lastUp = -1e9;     // exponential backoff on failed upgrade probes
+  // Measured at boot. Assuming 60Hz made the governor blind on 120Hz displays:
+  // a dropped frame there is 16.7ms, which the old 21.4ms threshold called fine.
+  let REFRESH = 60;
+  let autoHalf = false;                 // governor's last resort before giving up
+  const effHalf = () => S.fpsCap || autoHalf;
+  const setTarget = () => { TARGET_MS = (effHalf() ? 2000 : 1000) / REFRESH; };
+  // Refresh is re-estimated continuously from a rolling window. A one-shot
+  // measurement at boot locked in 60Hz on a 120Hz display, because the page was
+  // already running at 150ms/frame and even the fast tail looked slow. The
+  // fastest frames we ever actually achieve are what reveal the panel's rate,
+  // so this only ever revises REFRESH upward within a session.
+  const GAPS = new Float32Array(180);
+  let gapI = 0, gapN = 0, gapTick = 0;
+  const RATES = [60, 75, 90, 100, 120, 144, 165];
+  function noteGap(ms) {
+    if (ms < 3 || ms > 120) return;
+    GAPS[gapI] = ms; gapI = (gapI + 1) % GAPS.length;
+    if (gapN < GAPS.length) gapN++;
+    if (++gapTick < 120 || gapN < 60) return;
+    gapTick = 0;
+    const a = Array.prototype.slice.call(GAPS, 0, gapN).sort((x, y) => x - y);
+    const fast = a[Math.floor(a.length * 0.05)];         // 5th pct = best sustained
+    const raw = 1000 / fast;
+    const snapped = RATES.reduce((p, c) => Math.abs(c - raw) < Math.abs(p - raw) ? c : p, 60);
+    if (snapped > REFRESH) { REFRESH = snapped; setTarget(); ftN = 0; updateStats(); }
+  }
+  function setQuality(level, force) {
+    level = clamp(level, 0, 2);
+    if (level === qLevel && !force) return;
+    qLevel = level;
+    applyQuality();
+    // Only pay for a re-bake if the pixel budget actually moves the DPR.
+    // Effect-flag-only changes used to trigger a full bakeLayers + buildPlants,
+    // which is a visible synchronous hitch on every governor adjustment.
+    const want = Math.min(window.devicePixelRatio || 1, 2);
+    const nextDpr = Math.max(1, Math.min(want, Math.sqrt(PX_BUDGET[qLevel] / Math.max(1, W * H))));
+    if (Math.abs(nextDpr - DPR) > 0.005) resize();
+    updateStats();
+  }
+  const FT_SORT = new Float32Array(45);      // scratch, so the median costs no GC
+  let govTick = 0;
+  function governor(dtMs) {
+    if (S.quality !== 'auto') return;
+    FT[ftI] = dtMs; ftI = (ftI + 1) % FT.length;
+    if (ftN < FT.length) { ftN++; return; }
+    if (qCool > 0) { qCool -= dtMs / 1000; return; }
+    // Only evaluate periodically: this used to allocate and sort a 45-element
+    // array on EVERY frame, which was itself a steady source of GC stutter.
+    if (++govTick < 15) return;
+    govTick = 0;
+    FT_SORT.set(FT);
+    FT_SORT.sort();                          // TypedArray sort is in-place, numeric
+    const med = FT_SORT[FT_SORT.length >> 1];
+    // A healthy frame is vsync-locked at ~TARGET_MS, NOT faster — so headroom
+    // can't be detected by "is the frame quick". Instead: if we're comfortably
+    // hitting vsync, optimistically probe one level up. If that probe fails
+    // soon after, back off exponentially so it settles instead of oscillating.
+    if (med > TARGET_MS * 1.28) {
+      if (qLevel > 0) {
+        if (tSec - lastUp < 12) upCool = Math.min(upCool * 3, 600);
+        setQuality(qLevel - 1); qCool = 4; ftN = 0;
+      } else if (!effHalf()) {
+        // Same backoff as the quality probe, or a machine that sits exactly
+        // between full and half refresh flips between them forever.
+        if (tSec - lastUp < 12) upCool = Math.min(upCool * 3, 600);
+        // Already at the lowest quality and still missing frames. Locking to half
+        // the refresh is judder-free (each frame is shown for exactly two
+        // refreshes), which reads far better than a ragged rate at the same cost.
+        autoHalf = true; setTarget(); acc = 0; qCool = 4; ftN = 0; updateStats();
+      }
+    } else if (med < TARGET_MS * 1.06 && tSec - lastUp > upCool) {
+      if (autoHalf) {                      // hand the frame rate back before quality
+        lastUp = tSec; autoHalf = false; setTarget(); acc = 0; qCool = 4; ftN = 0; updateStats();
+      } else if (qLevel < 2) {
+        lastUp = tSec; setQuality(qLevel + 1); qCool = 1.5; ftN = 0;
+      }
+    }
+  }
+
+  let acc = 0;
+  function frame(now) {
+    requestAnimationFrame(frame);
+    const raw = now - last;
+    last = now;
+
+    // (No document.hidden guard here: browsers already suspend rAF for hidden
+    // tabs, and skipping the paint breaks the first frame in embedded/offscreen
+    // hosts that keep firing rAF while reporting hidden.)
+
+    // Optional frame cap. A steady 30 reads as smoother than a ragged 45, and
+    // it halves both GPU and CPU load.
+    let step = raw;
+    if (effHalf()) {
+      acc += raw;
+      if (acc < TARGET_MS - 1) return;
+      step = acc;                    // the real interval since we last rendered
+      acc = 0;
+    }
+
+    let dt = step / 1000;
+    if (dt > 0.05) dt = 0.05;
+    tSec += dt;
+    fps += (1 / Math.max(dt, 1e-4) - fps) * 0.06;
+    noteGap(raw);
+    const wT0 = DIAG ? performance.now() : 0;
+    update(dt, tSec);
+    render(tSec);
+    if (step > 0 && step < 500) {
+      if (DIAG) diagSample(step, performance.now() - wT0);
+      else governor(step);
+    }
+
+    statTimer += dt;
+    if (statTimer > 0.5) { statTimer = 0; updateStats(); }
+    clockTimer += dt;
+    if (S.autoTheme && clockTimer > 30) {
+      clockTimer = 0;
+      const want = themeForHour(new Date().getHours());
+      if (want !== theme.id) setTheme(want, true);
+    }
+  }
+
+  /* ------------------------------------------------------------------ *
+   *  UI                                                                 *
+   * ------------------------------------------------------------------ */
+  const panel = document.getElementById('panel');
+  const countEl = document.getElementById('count'), countVal = document.getElementById('countVal');
+  const speedEl = document.getElementById('speed'), speedVal = document.getElementById('speedVal');
+  const themesEl = document.getElementById('themes');
+
+  THEMES.forEach(th => {
+    const el = document.createElement('div');
+    el.className = 'swatch';
+    el.dataset.id = th.id;
+    el.title = th.name;
+    el.style.background = `linear-gradient(160deg, ${th.water[0]}, ${th.water[2]})`;
+    el.style.color = th.fish[0];
+    el.innerHTML = `<span class="fishdot" style="background:${th.fish[2]}"></span>`;
+    el.addEventListener('click', () => {
+      if (S.autoTheme) { S.autoTheme = false; syncChips(); }
+      setTheme(th.id);
+    });
+    themesEl.appendChild(el);
+  });
+
+  function setTheme(id, keepAuto) {
+    theme = THEMES.find(t => t.id === id) || THEMES[0];
+    if (!keepAuto) S.theme = theme.id;
+    clearCaches();
+    bakeThemePaint();
+    recolorFish();
+    bakeLayers();
+    document.body.style.background = theme.water[1];
+    const meta = document.querySelector('meta[name=theme-color]');
+    if (meta) meta.setAttribute('content', theme.water[1]);
+    panel.classList.toggle('dark', !!theme.dark);
+    for (const c of themesEl.children) c.classList.toggle('active', c.dataset.id === theme.id);
+    save();
+  }
+
+  countEl.addEventListener('input', () => {
+    S.count = +countEl.value;
+    countVal.textContent = S.count;
+    syncFishCount();
+    save();
+  });
+  const sizeEl = document.getElementById('size'), sizeVal = document.getElementById('sizeVal');
+  sizeEl.addEventListener('input', () => {
+    S.size = +sizeEl.value;
+    sizeVal.textContent = (S.size / 100).toFixed(1) + '\u00d7';
+    applySize();
+    save();
+  });
+  speedEl.addEventListener('input', () => {
+    S.speed = +speedEl.value;
+    speedVal.textContent = (S.speed / 100).toFixed(1) + '×';
+    save();
+  });
+
+  function syncChips() {
+    document.querySelectorAll('.chip').forEach(c => c.classList.toggle('on', !!S[c.dataset.opt]));
+    document.querySelectorAll('#quality .pick').forEach(b => b.classList.toggle('on', b.dataset.v === String(S.quality)));
+  }
+  const qualityEl = document.getElementById('quality');
+  [['auto', 'Auto'], ['2', 'High'], ['1', 'Medium'], ['0', 'Low']].forEach(([v, label]) => {
+    const b = document.createElement('div');
+    b.className = 'pick'; b.textContent = label; b.dataset.v = v;
+    b.style.flex = '1 1 22%'; b.style.fontSize = '11.5px'; b.style.padding = '7px 3px';
+    b.addEventListener('click', () => {
+      S.quality = v;
+      if (v === 'auto') { ftN = 0; qCool = 0; }
+      else setQuality(+v, true);
+      syncChips(); updateStats(); save();
+    });
+    qualityEl.appendChild(b);
+  });
+  document.querySelectorAll('.chip').forEach(chip => {
+    chip.addEventListener('click', () => {
+      const k = chip.dataset.opt;
+      S[k] = !S[k];
+      chip.classList.toggle('on', S[k]);
+      applyQuality();
+      setTarget();
+      if (k === 'fpsCap') { autoHalf = false; setTarget(); acc = 0; ftN = 0; qCool = 1; }
+      if (k === 'predator') predator = S.predator ? makePredator() : null;
+      if (k === 'autoTheme' && S.autoTheme) { clockTimer = 999; setTheme(themeForHour(new Date().getHours()), true); }
+      save();
+    });
+  });
+
+  document.getElementById('closeBtn').addEventListener('click', () => panel.classList.add('collapsed'));
+  document.getElementById('toggleBtn').addEventListener('click', () => panel.classList.remove('collapsed'));
+
+  const shareBtn = document.getElementById('shareBtn');
+  shareBtn.addEventListener('click', () => {
+    writeSeed();
+    const url = location.href;
+    const done = () => { shareBtn.textContent = '✓ Copied'; setTimeout(() => shareBtn.textContent = '🔗 Share', 1600); };
+    if (navigator.clipboard) navigator.clipboard.writeText(url).then(done, () => prompt('Copy this link:', url));
+    else prompt('Copy this link:', url);
+  });
+  document.getElementById('newBtn').addEventListener('click', () => {
+    SEED = (Math.random() * 0xffffffff) >>> 0;
+    writeSeed();
+    regenWorld();
+  });
+
+  // ---------- pointer ----------
+  let lastPx = 0, lastPy = 0, hasLast = false;
+  canvas.addEventListener('pointermove', e => {
+    if (hasLast) {
+      const dx = e.clientX - lastPx, dy = e.clientY - lastPy;
+      pointer.speed = pointer.speed * 0.6 + Math.hypot(dx, dy) * 60 * 0.4;
+    }
+    lastPx = e.clientX; lastPy = e.clientY; hasLast = true;
+    pointer.x = e.clientX; pointer.y = e.clientY;
+    pointer.idle = 0; pointer.active = true;
+  });
+  canvas.addEventListener('pointerleave', () => { pointer.active = false; hasLast = false; });
+  canvas.addEventListener('pointerdown', e => {
+    for (let i = 0; i < 7; i++) {
+      food.push({ x: e.clientX + rand(-22, 22), y: e.clientY + rand(-16, 16),
+                  r: rand(1.6, 3), vy: rand(4, 14), life: rand(6, 10), eaten: false });
+    }
+  });
+
+  /* ------------------------------------------------------------------ *
+   *  Design-a-fish modal                                                *
+   * ------------------------------------------------------------------ */
+  const PALETTE = ['#ffb7c9', '#ffd6a5', '#a9def9', '#bdeeb2', '#e4c1f9', '#fdffb6',
+                   '#ff9ec4', '#9ad6ff', '#c4a3f5', '#a0e8c0', '#ffffff', '#ffe5b4'];
+  const modalWrap = document.getElementById('modalWrap');
+  const pv = document.getElementById('fishPreview');
+  const pvCtx = pv.getContext('2d');
+  const draft = { sp: 'tetra', color: '#ffb7c9', finColor: '#ffd6a5', pattern: 'none', sizeMul: 1.4, name: '' };
+
+  function buildPickers() {
+    const spEl = document.getElementById('fSpecies');
+    SPECIES.forEach(s => {
+      const b = document.createElement('div');
+      b.className = 'pick'; b.textContent = s.label; b.dataset.v = s.id;
+      b.addEventListener('click', () => { draft.sp = s.id; refreshPickers(); });
+      spEl.appendChild(b);
+    });
+    const patEl = document.getElementById('fPattern');
+    [['none', 'Plain'], ['stripes', 'Stripes'], ['spots', 'Spots']].forEach(([v, l]) => {
+      const b = document.createElement('div');
+      b.className = 'pick'; b.textContent = l; b.dataset.v = v;
+      b.addEventListener('click', () => { draft.pattern = v; refreshPickers(); });
+      patEl.appendChild(b);
+    });
+    [['fBody', 'color'], ['fFin', 'finColor']].forEach(([id, key]) => {
+      const el = document.getElementById(id);
+      PALETTE.forEach(c => {
+        const b = document.createElement('div');
+        b.className = 'col'; b.style.background = c; b.dataset.v = c;
+        b.addEventListener('click', () => { draft[key] = c; refreshPickers(); });
+        el.appendChild(b);
+      });
+    });
+  }
+  function refreshPickers() {
+    document.querySelectorAll('#fSpecies .pick').forEach(b => b.classList.toggle('on', b.dataset.v === draft.sp));
+    document.querySelectorAll('#fPattern .pick').forEach(b => b.classList.toggle('on', b.dataset.v === draft.pattern));
+    document.querySelectorAll('#fBody .col').forEach(b => b.classList.toggle('on', b.dataset.v === draft.color));
+    document.querySelectorAll('#fFin .col').forEach(b => b.classList.toggle('on', b.dataset.v === draft.finColor));
+  }
+
+  // preview reuses the real renderer by pointing dc at the preview context
+  let pvRaf = 0;
+  function drawPreview(now) {
+    const w = pv.clientWidth || 320, h = 96;
+    if (pv.width !== w * DPR) { pv.width = w * DPR; pv.height = h * DPR; }
+    pvCtx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    const grad = pvCtx.createLinearGradient(0, 0, 0, h);
+    grad.addColorStop(0, theme.water[0]); grad.addColorStop(1, theme.water[1]);
+    pvCtx.fillStyle = grad;
+    pvCtx.fillRect(0, 0, w, h);
+
+    const sp = SPECIES_BY_ID[draft.sp] || SPECIES[0];
+    const ghost = {
+      sp, depth: 1, color: draft.color, finColor: draft.finColor, pattern: draft.pattern,
+      x: w / 2, y: h / 2, size: (h * 0.30 * draft.sizeMul) / sp.height,
+      angle: 0, beat: 6, boost: 1, flexScale: 1.05, tailPhase: 0, isPredator: false
+    };
+    prepPaint(ghost);        // drawFish reads precomputed paint, not live colours
+    const saveDc = dc, saveW = W;
+    dc = pvCtx; W = w;
+    drawFish(ghost, now / 1000);
+    dc = saveDc; W = saveW;
+    pvRaf = requestAnimationFrame(drawPreview);
+  }
+
+  function openModal() {
+    draft.name = '';
+    document.getElementById('fName').value = '';
+    modalWrap.classList.add('open');
+    refreshPickers();
+    if (!pvRaf) pvRaf = requestAnimationFrame(drawPreview);
+  }
+  function closeModal() {
+    modalWrap.classList.remove('open');
+    cancelAnimationFrame(pvRaf); pvRaf = 0;
+  }
+  document.getElementById('designBtn').addEventListener('click', openModal);
+  document.getElementById('fCancel').addEventListener('click', closeModal);
+  modalWrap.addEventListener('click', e => { if (e.target === modalWrap) closeModal(); });
+  document.addEventListener('keydown', e => { if (e.key === 'Escape' && modalWrap.classList.contains('open')) closeModal(); });
+  document.getElementById('fName').addEventListener('input', e => { draft.name = e.target.value.trim(); });
+  document.getElementById('fSize').addEventListener('input', e => { draft.sizeMul = +e.target.value / 100; });
+  document.getElementById('fAdd').addEventListener('click', () => {
+    S.custom.push({ sp: draft.sp, color: draft.color, finColor: draft.finColor,
+                    pattern: draft.pattern, sizeMul: draft.sizeMul, name: draft.name });
+    save();
+    rebuildCustom();
+    closeModal();
+  });
+
+  /* ------------------------------------------------------------------ *
+   *  Boot                                                               *
+   * ------------------------------------------------------------------ */
+  countEl.value = S.count; countVal.textContent = S.count;
+  speedEl.value = S.speed; speedVal.textContent = (S.speed / 100).toFixed(1) + '×';
+  sizeEl.value = S.size; sizeVal.textContent = (S.size / 100).toFixed(1) + '×';
+  if (S.quality !== 'auto') qLevel = clamp(+S.quality || 0, 0, 2);
+  applyQuality();
+  setTarget();
+  syncChips();
+  buildPickers();
+  writeSeed();
+
+  resize();
+  if (S.autoTheme) setTheme(themeForHour(new Date().getHours()), true);
+  else setTheme(S.theme);
+  syncFishCount();
+  rebuildCustom();
+  if (S.predator) predator = makePredator();
+  requestAnimationFrame(frame);
+
+  /* ------------------------------------------------------------------ *
+   *  Self-profiler                                                      *
+   *  I can't measure this machine from where I build it, so the page     *
+   *  measures itself: hold each config for a stretch of real frames and  *
+   *  compare medians. Also counts hitches (frames >2x target), which is  *
+   *  what distinguishes GC pauses from steady fill-rate cost.            *
+   * ------------------------------------------------------------------ */
+  const diagBox = document.getElementById('diagBox');
+  let DIAG = null;
+  const DIAG_N = 80;   // frames sampled per configuration
+
+  function diagSteps() {
+    const on = {};
+    for (const k of ['caustics', 'rays', 'dof', 'shadows', 'plants', 'bubbles']) on[k] = S[k];
+    return [
+      { name: 'baseline (as configured)', apply: () => Object.assign(S, on) },
+      { name: 'without caustics',  apply: () => { Object.assign(S, on); S.caustics = false; } },
+      { name: 'without light rays',apply: () => { Object.assign(S, on); S.rays = false; } },
+      { name: 'without depth',     apply: () => { Object.assign(S, on); S.dof = false; } },
+      { name: 'without shadows',   apply: () => { Object.assign(S, on); S.shadows = false; } },
+      { name: 'without plants',    apply: () => { Object.assign(S, on); S.plants = false; } },
+      { name: 'no effects at all', apply: () => { Object.assign(S, on); S.caustics = S.rays = S.dof = S.shadows = S.plants = S.bubbles = false; } },
+      { name: 'no fish drawn',     apply: () => { Object.assign(S, on); DIAG.hideFish = true; } },
+      { name: 'empty canvas',      apply: () => { Object.assign(S, on); DIAG.hideFish = true;
+                                                  S.caustics = S.rays = S.dof = S.shadows = S.plants = S.bubbles = false; } }
+    ];
+  }
+
+  function startDiag() {
+    const restore = { quality: S.quality };
+    for (const k of ['caustics', 'rays', 'dof', 'shadows', 'plants', 'bubbles']) restore[k] = S[k];
+    S.quality = String(qLevel);          // pin quality so the governor can't move mid-test
+    DIAG = { steps: diagSteps(), i: -1, warm: 0, samples: [], results: [], restore, hideFish: false,
+             work: [], n: DIAG_N };
+    diagBox.classList.add('open');
+    diagBox.textContent = 'Measuring… hold still for ~20 seconds.';
+    nextDiagStep();
+  }
+  function nextDiagStep() {
+    DIAG.i++;
+    if (DIAG.i >= DIAG.steps.length) return finishDiag();
+    DIAG.hideFish = false;
+    DIAG.steps[DIAG.i].apply();
+    applyQuality();
+    DIAG.warm = 12; DIAG.samples.length = 0; DIAG.work.length = 0;
+    diagBox.textContent = `Measuring ${DIAG.i + 1}/${DIAG.steps.length}: ${DIAG.steps[DIAG.i].name}…`;
+  }
+  function diagSample(ms, work) {
+    if (DIAG.warm > 0) { DIAG.warm--; return; }
+    DIAG.samples.push(ms); DIAG.work.push(work);
+    if (DIAG.samples.length < DIAG.n) return;
+    const a = DIAG.samples.slice().sort((x, y) => x - y);
+    const w = DIAG.work.slice().sort((x, y) => x - y);
+    DIAG.results.push({
+      name: DIAG.steps[DIAG.i].name,
+      med: a[a.length >> 1],
+      work: w[w.length >> 1],
+      p95: a[Math.floor(a.length * 0.95)],
+      hitches: a.filter(v => v > TARGET_MS * 2).length
+    });
+    nextDiagStep();
+  }
+  function finishDiag() {
+    const R = DIAG.results, base = R[0], N = DIAG.n;
+    const pad = (s, n) => (s + '                       ').slice(0, n);
+    let out = 'FISH TANK — LAG REPORT\n';
+    out += `${W}x${H} css · ${(canvas.width * canvas.height / 1e6).toFixed(2)}MP canvas · dpr ${(canvas.width / W).toFixed(2)}\n`;
+    out += `${allFish.length + (predator ? 1 : 0)} fish · quality ${QNAME[qLevel]} · ${REFRESH}Hz · target ${TARGET_MS.toFixed(1)}ms\n`;
+    out += `ua ${navigator.userAgent.slice(0, 72)}\n\n`;
+    out += pad('CONFIG', 26) + pad('FRAME', 9) + pad('WORK', 9) + pad('P95', 9) + 'HITCH/' + N + '\n';
+    for (const r of R) {
+      out += pad(r.name, 26) + pad(r.med.toFixed(1) + 'ms', 9)
+           + pad(r.work.toFixed(1) + 'ms', 9) + pad(r.p95.toFixed(1) + 'ms', 9) + r.hitches + '\n';
+    }
+    const byName = n => R.find(r => r.name === n) || base;
+    // Deltas come from WORK, not FRAME: frame intervals are quantised to whole
+    // refresh periods, so anything cheaper than one refresh reads as +0.0ms.
+    const saving = n => (base.work - byName(n).work);
+    out += '\nCOST OF EACH (median CPU work vs baseline)\n';
+    for (const [label, n] of [['caustics', 'without caustics'], ['rays', 'without light rays'],
+                              ['depth', 'without depth'], ['shadows', 'without shadows'],
+                              ['plants', 'without plants']]) {
+      out += `  ${pad(label, 12)}${saving(n) >= 0 ? '+' : ''}${saving(n).toFixed(1)}ms\n`;
+    }
+    const fishCost = base.work - byName('no fish drawn').work;
+    const fxCost = base.work - byName('no effects at all').work;
+    out += `  ${pad('all fish', 12)}+${fishCost.toFixed(1)}ms\n`;
+    out += `  ${pad('all effects', 12)}+${fxCost.toFixed(1)}ms\n`;
+
+    const empty = byName('empty canvas');
+    out += '\nVERDICT\n';
+    if (empty.work > TARGET_MS * 0.9) {
+      out += '  An EMPTY canvas already eats the frame budget => the cost is the\n';
+      out += '  page/compositor or the display, not the drawing.\n';
+    } else if (base.hitches >= Math.max(2, Math.round(N * 0.05)) && base.p95 > base.med * 2) {
+      out += '  Median fine but p95 spikes with many hitches => intermittent stalls\n';
+      out += '  (GC or layer re-raster), not steady per-frame cost.\n';
+    } else if (fishCost > fxCost * 1.3) {
+      out += `  Per-fish drawing dominates (${fishCost.toFixed(1)}ms of ${base.work.toFixed(1)}ms).\n`;
+      out += '  Lower the fish count, or drop a quality level for cheaper fish.\n';
+    } else if (fxCost > fishCost * 1.3) {
+      out += `  Full-screen effects dominate (${fxCost.toFixed(1)}ms of ${base.work.toFixed(1)}ms).\n`;
+      out += '  Shed the largest effect line above.\n';
+    } else {
+      out += `  Split roughly evenly: fish ${fishCost.toFixed(1)}ms vs effects ${fxCost.toFixed(1)}ms\n`;
+      out += `  of ${base.work.toFixed(1)}ms total. Both need to come down.\n`;
+    }
+    diagBox.textContent = out;
+    const btn = document.createElement('span');
+    btn.className = 'dbtn'; btn.textContent = 'Copy report';
+    btn.onclick = () => {
+      const t = out;
+      if (navigator.clipboard) navigator.clipboard.writeText(t).then(() => btn.textContent = '✓ Copied');
+      else { const ta = document.createElement('textarea'); ta.value = t; document.body.appendChild(ta); ta.select(); document.execCommand('copy'); ta.remove(); btn.textContent = '✓ Copied'; }
+    };
+    const close = document.createElement('span');
+    close.className = 'dbtn'; close.textContent = 'Close';
+    close.onclick = () => { diagBox.classList.remove('open'); };
+    diagBox.appendChild(btn); diagBox.appendChild(close);
+    Object.assign(S, DIAG.restore);
+    applyQuality(); syncChips();
+    DIAG = null;
+  }
+  document.getElementById("diagBtn").addEventListener("click", startDiag);
+
+  // installable metadata without a second file (a service worker would need one)
+  try {
+    const mf = { name: 'Pastel Fish Tank', short_name: 'Fish Tank', display: 'fullscreen',
+                 background_color: theme.water[1], theme_color: theme.water[1], start_url: '.' };
+    const link = document.createElement('link');
+    link.rel = 'manifest';
+    link.href = URL.createObjectURL(new Blob([JSON.stringify(mf)], { type: 'application/manifest+json' }));
+    document.head.appendChild(link);
+  } catch (e) {}
+})();
+</script>
+</body>
+</html>
